@@ -38,7 +38,14 @@ php -i | grep extension_dir              # where extensions go
 
 1. Download the zip matching your PHP from the [latest release](https://github.com/ProtectYourePHP/pyp-ext/releases/latest),
    e.g. `php_pyp-0.1.0-8.4-nts-vs17-x86_64.zip`.
-2. Copy `php_pyp.dll` from the zip into your `extension_dir` (usually `C:\php\ext`).
+2. Copy the DLL from the zip into your `extension_dir` (usually `C:\php\ext`) and **rename it to
+   `php_pyp.dll`** (in the zip it is called `php_pyp-0.1.0-8.4-nts-vs17-x86_64.dll`; PIE renames it automatically).
+
+   ```powershell
+   Expand-Archive php_pyp-0.1.0-8.4-nts-vs17-x86_64.zip -DestinationPath pyp
+   Copy-Item pyp\php_pyp-0.1.0-8.4-nts-vs17-x86_64.dll C:\php\ext\php_pyp.dll
+   ```
+
 3. Add to `php.ini`:
 
    ```ini
