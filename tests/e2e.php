@@ -326,6 +326,25 @@ if ($myMac !== '') {
     [$o, $e, $c] = runApp(lic(["--mac=$myMac"]));
     check("license bound to this machine's MAC runs ($myMac)", $c === 0 && $o === $expected, "$o $e");
 }
+$installPath = str_replace('\\', '/', (string)realpath($out));
+[$o, $e, $c] = runApp(lic(["--path=$installPath"]));
+check('license bound to the installation path runs', $c === 0 && $o === $expected, "$o $e");
+[$o, $e, $c] = runApp(lic(['--path=' . dirname($installPath) . '/*']));
+check('path wildcard (parent/*) matches', $c === 0 && $o === $expected, "$o $e");
+[$o, $e, $c] = runApp(lic(['--path=/srv/other-shop']));
+check('wrong installation path rejected', $c !== 0 && strpos($e, 'not licensed') !== false, "$o $e");
+
+[$o, $e, $c] = runApp(lic(['--updates-until=2020-01-01']));
+check('build newer than the update period is refused', $c !== 0 && strpos($e, 'update period') !== false, "$o $e");
+$typed = lic(['--updates-until=365d', '--support-until=2027-03-31', '--type=premium']);
+[$o, $e, $c] = runApp($typed);
+check('build within the update period runs', $c === 0 && $o === $expected, "$o $e");
+[$o, $e, $c] = php(['-r', 'require $argv[1]; echo json_encode(\Pyp\Loader::license());', "$out/pyp/pyp-loader.php"],
+    ['PYP_LICENSE' => $typed, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => $cliCache]);
+$info = json_decode($o, true);
+check('Loader::license() exposes type, support and update dates', ($info['valid'] ?? false) === true && ($info['type'] ?? '') === 'premium'
+    && strncmp((string)($info['support_until'] ?? ''), '2027-03-31', 10) === 0 && !empty($info['updates_until']), "$o $e");
+
 [$o, $e, $c] = runApp(lic(['--expires=2020-01-01']));
 check('expired license shows custom message', $c !== 0 && strpos($e, 'Trial over - buy at example.com') !== false, "$o $e");
 $rev = lic([]);

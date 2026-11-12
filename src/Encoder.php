@@ -229,6 +229,7 @@ final class Encoder
             'layers' => $layers,
             'messages' => (object)$this->o['messages'],
             'grace' => max(0, (int)$this->o['grace']),
+            'built' => time(),   // checked against the license's "updates_until"
         ];
         $raw = json_encode($header, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         $key = Loader::deriveKey($embedded, $ext, $share, $fileId, $salt);

@@ -93,10 +93,14 @@ final class LicenseServer
             $resp['message'] = is_string($lic['message'] ?? null) ? $lic['message'] : null;
             $resp['license'] = [
                 'id' => (string)($lic['id'] ?? ''),
+                'type' => $lic['type'] ?? null,
                 'expires_at' => $lic['expires_at'] ?? null,
+                'support_until' => $lic['support_until'] ?? null,
+                'updates_until' => $lic['updates_until'] ?? null,
                 'domains' => array_values((array)($lic['domains'] ?? [])),
                 'ips' => array_values((array)($lic['ips'] ?? [])),
                 'macs' => array_values((array)($lic['macs'] ?? [])),
+                'paths' => array_values((array)($lic['paths'] ?? [])),
             ];
             $host = self::sanitizeHost($req['host'] ?? null);
             if (!empty($lic['revoked'])) {
@@ -136,6 +140,7 @@ final class LicenseServer
             'domain' => is_string($h['domain'] ?? null) ? strtolower($h['domain']) : '',
             'ips' => array_slice($strings($h['ips'] ?? []), 0, 32),
             'macs' => array_slice($strings($h['macs'] ?? []), 0, 64),
+            'path' => is_string($h['path'] ?? null) ? substr($h['path'], 0, 1024) : '',
         ];
     }
 

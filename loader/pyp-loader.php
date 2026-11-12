@@ -38,7 +38,7 @@ final class LicenseException extends \RuntimeException
 
 final class Loader
 {
-    const VERSION = '1.1.1';
+    const VERSION = '1.2.0';
     const MAGIC = 'PYP1';
     const MAX_TTL = 604800;
     const MAX_RESPONSE = 65536;
@@ -55,6 +55,7 @@ final class Loader
         'key'          => 'A required decryption key is missing.',
         'corrupt'      => 'This protected file is corrupt or has been modified.',
         'denied'       => 'Access to this protected file was denied.',
+        'updates'      => 'This version was released after the update period of your license ended. Please enter a license with a longer update period.',
     ];
 
     /** @var array */
@@ -249,6 +250,9 @@ final class Loader
                 return false;
             }
         }
+        if (isset($h['built']) && (!is_int($h['built']) || $h['built'] < 0)) {
+            return false;
+        }
         return true;
     }
 
@@ -357,7 +361,9 @@ final class Loader
             if ($license === '') {
                 throw self::exception('missing', null);
             }
-            $share = self::share($header['project'], $layers['server'], $license, (int)($header['grace'] ?? 0), false)['share'];
+            $grant = self::share($header['project'], $layers['server'], $license, (int)($header['grace'] ?? 0), false);
+            self::checkUpdatePeriod($header, $grant['license'], $layers['server'], $license);
+            $share = $grant['share'];
         }
         return self::deriveKey(
             (string)base64_decode($layers['embedded'], true),
@@ -554,10 +560,73 @@ final class Loader
         }
         try {
             $g = self::share($project, $srv, $key, 0, false);
-            return ['ok' => true, 'type' => null, 'message' => null, 'license' => $g['license'], 'key' => $key];
         } catch (LicenseException $e) {
             return ['ok' => false, 'type' => $e->type, 'message' => $e->getMessage() ?: null, 'license' => null, 'key' => $key];
         }
+        // a protected file of this installation was refused because it is newer than the update period
+        $marker = self::readJson((string)self::updatesMarker($project, $srv, $key));
+        $until = !empty($g['license']['updates_until']) ? strtotime((string)$g['license']['updates_until']) : false;
+        if ($marker !== null && $until !== false && (int)($marker['built'] ?? 0) > $until) {
+            return ['ok' => false, 'type' => 'updates', 'message' => null, 'license' => $g['license'], 'key' => $key];
+        }
+        return ['ok' => true, 'type' => null, 'message' => null, 'license' => $g['license'], 'key' => $key];
+    }
+
+    /**
+     * License of the running application, e.g. to show "support until" or the license type:
+     *   $l = \Pyp\Loader::license();
+     *   if ($l && $l['support_until'] && strtotime($l['support_until']) > time()) { ... }
+     * Returns null when the application does not use online licensing.
+     *
+     * @return array{valid:bool,error:?string,id:?string,type:?string,expires_at:?string,support_until:?string,updates_until:?string,domains:array,ips:array,macs:array,paths:array}|null
+     */
+    public static function license(): ?array
+    {
+        $site = self::site();
+        if (!is_array($site['server'] ?? null) || !is_string($site['project'] ?? null)) {
+            return null;
+        }
+        $s = self::licenseState($site['project'], $site['server']);
+        $l = is_array($s['license']) ? $s['license'] : [];
+        $str = static function ($v): ?string {
+            return is_string($v) && $v !== '' ? $v : null;
+        };
+        return [
+            'valid' => $s['ok'],
+            'error' => $s['type'],
+            'id' => $str($l['id'] ?? null),
+            'type' => $str($l['type'] ?? null),
+            'expires_at' => $str($l['expires_at'] ?? null),
+            'support_until' => $str($l['support_until'] ?? null),
+            'updates_until' => $str($l['updates_until'] ?? null),
+            'domains' => (array)($l['domains'] ?? []),
+            'ips' => (array)($l['ips'] ?? []),
+            'macs' => (array)($l['macs'] ?? []),
+            'paths' => (array)($l['paths'] ?? []),
+        ];
+    }
+
+    /** Files built after the license's update period ("updates_until") are refused. */
+    private static function checkUpdatePeriod(array $header, array $license, array $srv, string $key): void
+    {
+        if (empty($license['updates_until']) || !isset($header['built'])) {
+            return;
+        }
+        $until = strtotime((string)$license['updates_until']);
+        if ($until !== false && $header['built'] > $until) {
+            $marker = self::updatesMarker($header['project'], $srv, $key);
+            if ($marker !== null) {
+                self::writeJson($marker, ['built' => $header['built']]);
+            }
+            throw self::exception('updates', null);
+        }
+    }
+
+    private static function updatesMarker(string $project, array $srv, string $key): ?string
+    {
+        $dir = self::cacheDir();
+        return $dir === null ? null
+            : $dir . '/u-' . hash('sha256', $project . "\0" . self::normalizeKey($key) . "\0" . (string)$srv['url']) . '.json';
     }
 
     private static function findLicense(array $srv): string
@@ -782,7 +851,42 @@ final class Loader
             'hostname' => $h,
             'ips'      => array_values(array_unique($ips)),
             'macs'     => self::macs(),
+            'path'     => self::installPath(),
         ];
+    }
+
+    /** Installation directory = the directory that contains the loader directory (pyp/). */
+    public static function installPath(): string
+    {
+        $p = self::$config['path'] ?? (getenv('PYP_PATH') ?: null);
+        if (!is_string($p) || $p === '') {
+            $real = @realpath(dirname(__DIR__));
+            $p = $real !== false ? $real : dirname(__DIR__);
+        }
+        return self::normalizePath($p);
+    }
+
+    public static function normalizePath(string $p): string
+    {
+        $p = rtrim(str_replace('\\', '/', $p), '/');
+        return $p === '' ? '/' : $p;
+    }
+
+    /** "/var/www/shop" matches exactly, "/var/www/*" matches everything below /var/www. */
+    private static function pathMatches(string $path, string $rule): bool
+    {
+        $path = self::normalizePath($path);
+        $rule = self::normalizePath($rule);
+        $ci = (bool)preg_match('#^[a-z]:/#i', $path);   // Windows paths are case-insensitive
+        if ($ci) {
+            $path = strtolower($path);
+            $rule = strtolower($rule);
+        }
+        if (substr($rule, -2) === '/*') {
+            $base = substr($rule, 0, -2);
+            return $path === $base || strncmp($path, $base . '/', strlen($base) + 1) === 0;
+        }
+        return $path === $rule;
     }
 
     /**
@@ -848,13 +952,27 @@ final class Loader
         return array_keys($macs);
     }
 
-    /** @return string|null null when allowed, otherwise expired|domain|ip|mac */
+    /** @return string|null null when allowed, otherwise expired|domain|ip|mac|path */
     public static function checkRestrictions(array $lic, array $host): ?string
     {
         if (!empty($lic['expires_at'])) {
             $ts = strtotime((string)$lic['expires_at']);
             if ($ts === false || $ts < time()) {
                 return 'expired';
+            }
+        }
+        if (!empty($lic['paths'])) {
+            // loaders before 1.2 do not report a path: a path restriction then refuses them
+            $p = is_string($host['path'] ?? null) ? $host['path'] : '';
+            $ok = false;
+            foreach ((array)$lic['paths'] as $rule) {
+                if ($p !== '' && is_string($rule) && $rule !== '' && self::pathMatches($p, $rule)) {
+                    $ok = true;
+                    break;
+                }
+            }
+            if (!$ok) {
+                return 'path';
             }
         }
         if (!empty($lic['domains'])) {
@@ -1015,7 +1133,7 @@ final class Loader
         }
 
         $server = $header['layers']['server'] ?? (self::site()['server'] ?? null);
-        $licenseProblem = in_array($type, ['missing', 'expired', 'unauthorized', 'invalid'], true) && is_array($server);
+        $licenseProblem = in_array($type, ['missing', 'expired', 'unauthorized', 'invalid', 'updates'], true) && is_array($server);
         if ($licenseProblem && !self::isActivationRequest()) {
             $url = self::activationUrl();
             $return = Activation::safeReturn((string)($_SERVER['REQUEST_URI'] ?? ''));
@@ -1151,7 +1269,11 @@ final class Activation
             $body .= '<p class="ok">The license for ' . $product . ' is active.</p><dl>'
                 . '<dt>License</dt><dd>' . $h($lic['id'] ?? '-') . '</dd>'
                 . '<dt>Key</dt><dd>' . $h(substr($state['key'], 0, 9)) . '&hellip;</dd>'
-                . '<dt>Valid until</dt><dd>' . $h($lic['expires_at'] ?? 'unlimited') . '</dd></dl>';
+                . (!empty($lic['type']) ? '<dt>Type</dt><dd>' . $h($lic['type']) . '</dd>' : '')
+                . '<dt>Valid until</dt><dd>' . $h(isset($lic['expires_at']) ? substr((string)$lic['expires_at'], 0, 10) : 'unlimited') . '</dd>'
+                . (!empty($lic['support_until']) ? '<dt>Support until</dt><dd>' . $h(substr((string)$lic['support_until'], 0, 10)) . '</dd>' : '')
+                . (!empty($lic['updates_until']) ? '<dt>Updates until</dt><dd>' . $h(substr((string)$lic['updates_until'], 0, 10)) . '</dd>' : '')
+                . '</dl>';
             if ($return !== '') {
                 $body .= '<p><a href="' . $h($return) . '">Continue</a></p>';
             }

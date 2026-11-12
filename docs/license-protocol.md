@@ -19,10 +19,11 @@ yourself in any language; `server/index.php` is the reference implementation.
     "domain": "shop.example.com",
     "hostname": "web01",
     "ips": ["203.0.113.5"],
-    "macs": ["aa:bb:cc:dd:ee:ff"]
+    "macs": ["aa:bb:cc:dd:ee:ff"],
+    "path": "/var/www/vhosts/shop.example.com/httpdocs"
   },
   "php": "8.4.1",
-  "loader": "1.0.0"
+  "loader": "1.2.0"
 }
 ```
 
@@ -40,10 +41,14 @@ HTTP 200, `application/json`:
   "message": null,
   "license": {
     "id": "lic_ab12cd34",
+    "type": "premium",
     "expires_at": "2027-01-01T00:00:00+00:00",
+    "support_until": "2026-12-31T23:59:59Z",
+    "updates_until": "2027-06-30T23:59:59Z",
     "domains": ["*.example.com"],
     "ips": ["10.0.0.0/8"],
-    "macs": []
+    "macs": [],
+    "paths": ["/var/www/vhosts/shop.example.com/httpdocs"]
   },
   "key": "base64( crypto_box_seal(keyShare, epk) )",
   "signature": "base64( Ed25519 detached signature over canonical(response without 'signature') )"
@@ -55,7 +60,11 @@ HTTP 200, `application/json`:
 | `status` | `ok`, `expired`, `not_authorized`, `revoked`, `invalid` |
 | `message` | optional text shown to the end user instead of the encoder's default message |
 | `ttl` | seconds the loader may cache the key share (max 7 days) |
-| `license.*` | restrictions. The loader re-checks them locally (empty list = unrestricted); `domains` supports `*.example.com`, `ips` supports CIDR |
+| `license.*` | restrictions. The loader re-checks them locally (empty list = unrestricted); `domains` supports `*.example.com`, `ips` supports CIDR, `paths` matches the installation path exactly or with a trailing `/*` (everything below). A path restriction refuses loaders older than 1.2, which do not report `host.path` |
+| `license.type` | optional free text (`regular`, `extended`, `premium`, ...), informational |
+| `license.support_until` | optional ISO date, informational - applications read it with `\Pyp\Loader::license()` |
+| `license.updates_until` | optional ISO date. Loaders 1.2+ refuse files whose build time (`built` in the file header) is later (error `updates`) |
+| `host.path` | installation directory reported by the loader (1.2+): the directory containing `pyp/` |
 | `key` | 32 byte key share, sealed to the request's `epk`. Must be `null` unless `status` is `ok` |
 | `signature` | verified with the project's public key that is embedded in the encoded files |
 

@@ -31,8 +31,9 @@ ProtectYourePHP - open source PHP encoder & licensing
       --activation-url=URL      URL of activate.php if it cannot be derived from DOCUMENT_ROOT
       --allow-change            allow replacing an active license on the activation page
   pyp license:create [--data=pyp.server.json] [--project-file=...] [--expires=30d|2027-01-01]
-      [--domain=a.com,*.b.com] [--ip=1.2.3.4,10.0.0.0/8] [--mac=aa:bb:..] [--message=TEXT]
-      [--ttl=3600] [--note=TEXT]
+      [--domain=a.com,*.b.com] [--ip=1.2.3.4,10.0.0.0/8] [--mac=aa:bb:..] [--path=/var/www/shop,/srv/*]
+      [--type=premium] [--support-until=365d|DATE] [--updates-until=365d|DATE]
+      [--message=TEXT] [--ttl=3600] [--note=TEXT]
   pyp license:list   [--data=...]
   pyp license:revoke KEY [--data=...]
   pyp serve [--listen=127.0.0.1:8080] [--data=pyp.server.json]
@@ -147,12 +148,18 @@ switch ($cmd) {
 
     case 'license:create':
         $project = loadProject($o);
-        $exp = $o['expires'] ?? null;
-        if (is_string($exp)) {
-            $ts = preg_match('/^(\d+)d$/', $exp, $m) ? time() + 86400 * (int)$m[1] : strtotime($exp);
-            $ts !== false or fail('invalid --expires');
-            $exp = gmdate('c', $ts);
-        }
+        $date = static function (string $opt) use ($o): ?string {
+            $v = $o[$opt] ?? null;
+            if (!is_string($v)) {
+                return null;
+            }
+            $ts = preg_match('/^(\d+)d$/', $v, $m) ? time() + 86400 * (int)$m[1] : strtotime($v);
+            $ts !== false or fail("invalid --$opt");
+            return gmdate('c', $ts);
+        };
+        $exp = $date('expires');
+        $supportUntil = $date('support-until');
+        $updatesUntil = $date('updates-until');
         foreach (list_($o['ip'] ?? null) as $rule) {
             $ip = explode('/', $rule, 2)[0];
             filter_var($ip, FILTER_VALIDATE_IP) or fail("invalid --ip entry: $rule");
@@ -161,14 +168,17 @@ switch ($cmd) {
             preg_match('/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i', $mac) or fail("invalid --mac entry: $mac");
         }
         $key = LicenseServer::generateKey();
-        (new LicenseServer($dataFile))->update(static function (array &$d) use ($project, $key, $exp, $o) {
+        (new LicenseServer($dataFile))->update(static function (array &$d) use ($project, $key, $exp, $supportUntil, $updatesUntil, $o) {
             $d['projects'][$project['project']] ??= [
                 'name' => $project['name'] ?? '', 'secret' => $project['secret'], 'sign_secret' => $project['sign_secret'],
             ];
             $d['licenses'][$key] = [
                 'project' => $project['project'], 'id' => 'lic_' . bin2hex(random_bytes(4)),
-                'expires_at' => $exp, 'domains' => array_map('strtolower', list_($o['domain'] ?? null)),
+                'type' => isset($o['type']) && $o['type'] !== true ? (string)$o['type'] : null,
+                'expires_at' => $exp, 'support_until' => $supportUntil, 'updates_until' => $updatesUntil,
+                'domains' => array_map('strtolower', list_($o['domain'] ?? null)),
                 'ips' => list_($o['ip'] ?? null), 'macs' => array_map('strtolower', list_($o['mac'] ?? null)),
+                'paths' => list_($o['path'] ?? null),
                 'revoked' => false, 'message' => isset($o['message']) ? (string)$o['message'] : null,
                 'ttl' => max(0, (int)($o['ttl'] ?? 3600)), 'note' => (string)($o['note'] ?? ''),
             ];
