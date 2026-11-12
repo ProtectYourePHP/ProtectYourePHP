@@ -38,7 +38,7 @@ final class LicenseException extends \RuntimeException
 
 final class Loader
 {
-    const VERSION = '1.1.0';
+    const VERSION = '1.1.1';
     const MAGIC = 'PYP1';
     const MAX_TTL = 604800;
     const MAX_RESPONSE = 65536;
@@ -342,7 +342,10 @@ final class Loader
         $external = null;
         if (!empty($layers['external'])) {
             $ref = $layers['external'];
-            $secret = $ref['type'] === 'env' ? getenv($ref['ref']) : @file_get_contents($ref['ref']);
+            $secret = false;
+            if ($ref['ref'] !== '') {
+                $secret = $ref['type'] === 'env' ? getenv($ref['ref']) : @file_get_contents($ref['ref']);
+            }
             if (!is_string($secret) || trim($secret) === '') {
                 throw self::exception('key', null);
             }
@@ -696,10 +699,11 @@ final class Loader
             $who = function_exists('posix_geteuid') ? (string)posix_geteuid() : (string)get_current_user();
             $base = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'pyp-cache-' . substr(hash('sha256', $who . '|' . __DIR__), 0, 16);
         }
-        if (!is_dir($base)) {
+        // all checks silenced: under open_basedir they warn instead of returning false
+        if (!@is_dir($base)) {
             @mkdir($base, 0700, true);
         }
-        $ok = is_dir($base) && !is_link($base) && is_writable($base);
+        $ok = @is_dir($base) && !@is_link($base) && @is_writable($base);
         if ($ok && function_exists('posix_geteuid')) {
             $ok = @fileowner($base) === posix_geteuid();   // refuse directories planted by other users
         }
@@ -781,12 +785,26 @@ final class Loader
         ];
     }
 
-    /** @return string[] lower-case, colon separated */
+    /**
+     * MAC detection is best effort: hosting restrictions (open_basedir, disabled functions)
+     * must never break the loader, they only mean "no MAC addresses known".
+     * @return string[] lower-case, colon separated
+     */
     private static function macs(): array
     {
         if (self::$macs !== null) {
             return self::$macs;
         }
+        try {
+            return self::$macs = self::detectMacs();
+        } catch (\Throwable $e) {
+            return self::$macs = [];
+        }
+    }
+
+    /** @return string[] */
+    private static function detectMacs(): array
+    {
         $found = [];
         if (function_exists('pyp_macs')) {
             $found = (array)\pyp_macs();   // native extension
@@ -799,8 +817,13 @@ final class Loader
                 }
             }
             if (!$found) {
-                foreach ((array)glob('/sys/class/net/*/address') as $f) {
-                    $found[] = (string)@file_get_contents($f);
+                // glob() returns false (not []) when open_basedir excludes /sys (e.g. Plesk)
+                $files = @glob('/sys/class/net/*/address');
+                foreach (is_array($files) ? $files : [] as $f) {
+                    $content = is_string($f) && $f !== '' ? @file_get_contents($f) : false;
+                    if (is_string($content)) {
+                        $found[] = $content;
+                    }
                 }
             }
             $disabled = array_map('trim', explode(',', strtolower((string)ini_get('disable_functions'))));
@@ -822,7 +845,7 @@ final class Loader
                 }
             }
         }
-        return self::$macs = array_keys($macs);
+        return array_keys($macs);
     }
 
     /** @return string|null null when allowed, otherwise expired|domain|ip|mac */

@@ -312,6 +312,15 @@ check('wrong domain rejected', $c !== 0 && strpos($e, 'not licensed') !== false,
 check('wrong ip rejected', $c !== 0 && strpos($e, 'not licensed') !== false, "$o $e");
 [$o, $e, $c] = runApp(lic(['--mac=de:ad:be:ef:00:01']));
 check('wrong mac rejected', $c !== 0 && strpos($e, 'not licensed') !== false, "$o $e");
+// shared hosting (e.g. Plesk) restricts file access with open_basedir: /sys and the system
+// temp dir are not readable there. The loader must still work (regression: glob() === false).
+$basedir = implode(PATH_SEPARATOR, [$tmp, $root]);
+[$o, $e, $c] = php(['-d', "open_basedir=$basedir", "$out/main.php"],
+    ['PYP_LICENSE' => $good, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => "$tmp/cache-basedir"]);
+check('runs under open_basedir like on Plesk (no warnings)', $c === 0 && $o === $expected && $e === '', "$o\n$e");
+[$o, $e, $c] = php(['-d', "open_basedir=$basedir", "$out/main.php"],
+    ['PYP_LICENSE' => $good, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => '']);
+check('runs under open_basedir without a usable cache dir', $c === 0 && $o === $expected && $e === '', "$o\n$e");
 [$myMac] = php(['-r', 'require $argv[1]; echo \Pyp\Loader::hostInfo()["macs"][0] ?? "";', "$root/loader/pyp-loader.php"]);
 if ($myMac !== '') {
     [$o, $e, $c] = runApp(lic(["--mac=$myMac"]));
