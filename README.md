@@ -90,7 +90,7 @@ What the loader enforces:
 * Server answers are Ed25519-signed and bound to a per-request nonce. The cache stores the
   complete **signed** answer, so editing the cache cannot extend TTL or remove restrictions.
 * Failures are cached for 30-60 s so an unlicensed site does not flood the license server.
-  A valid cached key is used while the server is down (`ttl`, plus `--grace` seconds).
+  A valid cached key is used while the server is down (`ttl`, plus `--grace` seconds, default 72 h). When the `ttl` ends, only one process per host refreshes; the others keep using the grace grant.
 * Decrypted PHP is only handed to `include`/`require`. `file_get_contents('pyp://...')`,
   `highlight_file()`, `show_source()`, `php_strip_whitespace()`, `SplFileObject` and calling
   `Loader::open()` from another file are refused.

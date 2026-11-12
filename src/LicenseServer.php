@@ -141,6 +141,7 @@ final class LicenseServer
             'ips' => array_slice($strings($h['ips'] ?? []), 0, 32),
             'macs' => array_slice($strings($h['macs'] ?? []), 0, 64),
             'path' => is_string($h['path'] ?? null) ? substr($h['path'], 0, 1024) : '',
+            'sapi' => ($h['sapi'] ?? null) === 'cli' ? 'cli' : 'web',   // loaders before 1.2.1 do not report it
         ];
     }
 

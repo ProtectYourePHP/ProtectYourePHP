@@ -20,10 +20,11 @@ yourself in any language; `server/index.php` is the reference implementation.
     "hostname": "web01",
     "ips": ["203.0.113.5"],
     "macs": ["aa:bb:cc:dd:ee:ff"],
-    "path": "/var/www/vhosts/shop.example.com/httpdocs"
+    "path": "/var/www/vhosts/shop.example.com/httpdocs",
+    "sapi": "web"
   },
   "php": "8.4.1",
-  "loader": "1.2.0"
+  "loader": "1.3.0"
 }
 ```
 
@@ -65,6 +66,7 @@ HTTP 200, `application/json`:
 | `license.support_until` | optional ISO date, informational - applications read it with `\Pyp\Loader::license()` |
 | `license.updates_until` | optional ISO date. Loaders 1.2+ refuse files whose build time (`built` in the file header) is later (error `updates`) |
 | `host.path` | installation directory reported by the loader (1.2+): the directory containing `pyp/` |
+| `host.sapi` | `web` or `cli` (loaders 1.2.1+). In CLI there is no request, so `host.domain` is the machine's hostname unless `PYP_DOMAIN` is set - a server should not lock a license to a domain reported by a `cli` check. Loaders 1.3+ report an empty domain for CLI runs without `PYP_DOMAIN`, and domain restrictions are not applied to them |
 | `key` | 32 byte key share, sealed to the request's `epk`. Must be `null` unless `status` is `ok` |
 | `signature` | verified with the project's public key that is embedded in the encoded files |
 
@@ -88,11 +90,18 @@ restrictions cannot be changed in the cache. The lifetime starts at
 failures for 30 s; a still valid cached grant (within `ttl` + `grace`) is used while the
 server is unreachable.
 
+Failures are remembered per host context (domain, addresses, path). A refused check from a
+cron job or a second virtual host therefore never locks out a context that is licensed, and
+it does not delete a grant that was issued for another host. Long-running processes
+re-validate their in-memory grant when its `ttl` ends (at the earliest after 60 s).
+
 ### HTTP status
 
 The reference server answers `405` for non-POST requests, `400` for invalid JSON, `429`
 when the per-IP rate limit is exceeded and `500` on internal errors. The loader treats any
-non-JSON answer or 5xx status as `unreachable`.
+non-JSON answer, any 5xx status and every answer that is not correctly signed for the request
+(rate limit, proxy or WAF error page, unknown project) as `unreachable`: only a signed answer
+is a statement about the license. A cached grant stays usable within `ttl` + `grace`.
 
 ### Security notes
 
@@ -103,4 +112,4 @@ non-JSON answer or 5xx status as `unreachable`.
 * `host` data is reported by the client. It stops honest-but-careless copying, not an attacker
   who patches the loader. Real protection comes from the server-issued key (the key is not
   on disk) and, optionally, the external key.
-* Use HTTPS. Unsigned or wrongly signed answers are rejected as `invalid`.
+* Use HTTPS. Unsigned or wrongly signed answers are never accepted; they count as `unreachable`.

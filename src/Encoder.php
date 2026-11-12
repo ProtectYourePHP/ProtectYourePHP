@@ -22,7 +22,7 @@ require_once __DIR__ . '/Obfuscator.php';
  *   data_ext       string[] extensions encrypted as data (xml, tpl, ...)
  *   exclude        string[] fnmatch patterns (relative paths) that are skipped entirely
  *   messages       array   missing|expired|unauthorized|unreachable|invalid|key|corrupt => text
- *   grace          int     seconds a cached key may be used when the server is unreachable
+ *   grace          int     seconds a cached key may be used when the server is unreachable (default 72 h)
  *   loader_dir     string  directory (relative to the output root) the loader is copied to
  *   activation_url ?string URL of activate.php (default: derived from DOCUMENT_ROOT at runtime)
  *   allow_change   bool    allow replacing an active license on the activation page
@@ -42,7 +42,7 @@ final class Encoder
             'product' => null, 'server_url' => null, 'license' => null, 'external' => null,
             'obfuscate' => true, 'strip_comments' => true, 'keep_docblocks' => false,
             'php_ext' => ['php', 'phtml', 'inc'], 'data_ext' => [], 'exclude' => [],
-            'messages' => [], 'grace' => 0, 'loader_dir' => 'pyp',
+            'messages' => [], 'grace' => 259200, 'loader_dir' => 'pyp',
             'activation_url' => null, 'allow_change' => false,
         ];
         $p = $this->o['project'] ?? null;

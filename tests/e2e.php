@@ -334,6 +334,20 @@ check('path wildcard (parent/*) matches', $c === 0 && $o === $expected, "$o $e")
 [$o, $e, $c] = runApp(lic(['--path=/srv/other-shop']));
 check('wrong installation path rejected', $c !== 0 && strpos($e, 'not licensed') !== false, "$o $e");
 
+// a refused check from another context (cron job reporting the machine's hostname, a second
+// virtual host) must not lock out the licensed site (regression: shared negative cache)
+$ctxKey = lic(['--domain=*.example.com', '--ttl=0']);
+$ctxEnv = ['PYP_CACHE_DIR' => "$tmp/cache-ctx"];
+[$o, $e, $c] = runApp($ctxKey, $ctxEnv);
+[$o2, $e2, $c2] = runApp($ctxKey, ['PYP_DOMAIN' => 'web01'] + $ctxEnv);
+[$o3, $e3, $c3] = runApp($ctxKey, $ctxEnv);
+check('refused check from another host context does not lock out the licensed one',
+    $c === 0 && $c2 !== 0 && strpos($e2, 'not licensed') !== false && $c3 === 0 && $o3 === $expected, "$e | $e2 | $e3");
+
+// CLI runs (cron, artisan) have no domain unless PYP_DOMAIN is set: the domain restriction is skipped
+[$o, $e, $c] = php(["$out/main.php"], ['PYP_LICENSE' => lic(['--domain=*.example.com']), 'PYP_DOMAIN' => '', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => "$tmp/cache-nodomain"]);
+check('CLI without PYP_DOMAIN passes a domain restriction', $c === 0 && $o === $expected, "$o $e");
+
 [$o, $e, $c] = runApp(lic(['--updates-until=2020-01-01']));
 check('build newer than the update period is refused', $c !== 0 && strpos($e, 'update period') !== false, "$o $e");
 $typed = lic(['--updates-until=365d', '--support-until=2027-03-31', '--type=premium']);
@@ -464,11 +478,38 @@ if ($legacy) {
 
 echo "license server down\n";
 $fresh = lic(['--domain=*.example.com']);
+// build with a grace period + a grant that is already past its ttl
+mkdir("$tmp/grace-src");
+file_put_contents("$tmp/grace-src/app.php", "<?php echo 'grace-ok';\n");
+pyp(['encode', "--src=$tmp/grace-src", "--out=$tmp/grace-out", "--server=$url", '--grace=3600']);
+$graceKey = lic(['--ttl=0']);
+$graceEnv = ['PYP_LICENSE' => $graceKey, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => "$tmp/cache-grace"];
+[$o, $e, $c] = php(["$tmp/grace-out/app.php"], $graceEnv);
+check('build with grace period runs', $c === 0 && $o === 'grace-ok', "$o $e");
 stopServer($licServer);
 [$o, $e, $c] = runApp($fresh);
 check('unreachable server reported', $c !== 0 && strpos($e, 'could not be reached') !== false, "$o $e");
 [$o, $e, $c] = runApp($good);
 check('cached grant keeps working while the server is down', $c === 0 && $o === $expected, $e);
+[$o, $e, $c] = php(["$tmp/grace-out/app.php"], $graceEnv);
+check('expired grant is used within the grace period', $c === 0 && $o === 'grace-ok', "$o $e");
+
+// Something else answers on the license URL: rate limit, proxy/WAF error page, wrong vhost.
+// Unsigned answers say nothing about the license - they must not delete a valid grant.
+mkdir("$tmp/stub");
+file_put_contents("$tmp/stub/index.php", '<?php http_response_code(429); header("Content-Type: application/json"); echo \'{"status":"invalid","message":"Too many requests."}\';');
+$procs[] = $stub = proc_open([PHP_BINARY, '-S', "127.0.0.1:$licPort", '-t', "$tmp/stub"],
+    [0 => ['pipe', 'r'], 1 => ['file', "$tmp/stub.txt", 'w'], 2 => ['file', "$tmp/stub.txt", 'a']], $sp);
+for ($i = 0; $i < 50 && !@fsockopen('127.0.0.1', $licPort); $i++) {
+    usleep(100000);
+}
+array_map('unlink', glob("$tmp/cache-grace/n-*.json") ?: []);   // forget the "unreachable" result from above (remembered for 30 s)
+[$o, $e, $c] = php(["$tmp/grace-out/app.php"], $graceEnv);
+check('unsigned answer (HTTP 429) keeps the grant usable within the grace period',
+    $c === 0 && $o === 'grace-ok' && count(glob("$tmp/cache-grace/s-*.json") ?: []) === 1, "$o $e");
+[$o, $e, $c] = runApp(lic(['--domain=*.example.com']));
+check('unsigned answer is reported as unreachable, not as an invalid license', $c !== 0 && strpos($e, 'could not be reached') !== false, "$o $e");
+stopServer($stub);
 
 echo "external key\n";
 $out2 = "$tmp/out2";

@@ -38,7 +38,7 @@ final class LicenseException extends \RuntimeException
 
 final class Loader
 {
-    const VERSION = '1.2.0';
+    const VERSION = '1.3.0';
     const MAGIC = 'PYP1';
     const MAX_TTL = 604800;
     const MAX_RESPONSE = 65536;
@@ -387,16 +387,18 @@ final class Loader
     {
         $id = hash('sha256', $project . "\0" . $license . "\0" . (string)$srv['url']);
         $host = self::hostInfo();
-        if (!$fresh && isset(self::$grants[$id])) {
+        // long-running processes (workers, daemons) must re-validate too: memory grants expire
+        if (!$fresh && isset(self::$grants[$id]) && self::$grants[$id]['until'] > time()) {
             return self::accept(self::$grants[$id], $host, $id);
         }
         $dir = self::cacheDir();
         $cacheFile = $dir !== null ? $dir . '/s-' . $id . '.json' : null;
-        $negFile = $dir !== null ? $dir . '/n-' . $id . '.json' : null;
+        $negFile = $dir !== null ? self::negFile($dir, $id, $host) : null;
 
         $stale = null;
+        $cached = null;
         if (!$fresh && $cacheFile !== null) {
-            $c = self::loadCachedGrant($cacheFile, $srv, max(0, $grace));
+            $cached = $c = self::loadCachedGrant($cacheFile, $srv, max(0, $grace));
             if ($c !== null && $c['fresh']) {
                 return self::accept($c, $host, $id);
             }
@@ -412,9 +414,23 @@ final class Loader
             }
         }
 
+        // When the ttl ends, every PHP worker wants a new grant at once. If another process is
+        // already refreshing, a still usable (grace) grant is used instead of queueing up.
+        $lock = null;
+        if ($stale !== null && $dir !== null) {
+            $lock = @fopen($dir . '/l-' . $id . '.lock', 'c');
+            if ($lock && !@flock($lock, LOCK_EX | LOCK_NB)) {
+                fclose($lock);
+                return self::accept($stale, $host, $id);
+            }
+        }
         try {
             $grant = self::requestGrant($project, $srv, $license, $host);
         } catch (LicenseException $e) {
+            if ($lock) {
+                fclose($lock);
+                $lock = null;
+            }
             if ($e->type === 'unreachable' && $stale !== null) {
                 return self::accept($stale, $host, $id);
             }
@@ -425,7 +441,10 @@ final class Loader
                     'until' => time() + ($e->type === 'unreachable' ? 30 : 60),
                 ]);
             }
-            if ($cacheFile !== null && $e->type !== 'unreachable') {
+            // A refusal for this host (e.g. a cron job reporting another domain) says nothing about
+            // a grant that was issued for a different host: only drop a grant this host could use.
+            if ($cacheFile !== null && $e->type !== 'unreachable'
+                && ($cached === null || self::checkRestrictions($cached['license'], $host) === null)) {
                 @unlink($cacheFile);
             }
             throw $e;
@@ -433,6 +452,9 @@ final class Loader
         if ($cacheFile !== null) {
             self::writeJson($cacheFile, ['resp' => $grant['resp'], 'sk' => base64_encode($grant['kp']), 'fetched' => time()]);
             @unlink((string)$negFile);
+        }
+        if ($lock) {
+            fclose($lock);
         }
         return self::accept($grant, $host, $id);
     }
@@ -443,8 +465,20 @@ final class Loader
         if ($reason !== null) {
             throw self::exception($reason === 'expired' ? 'expired' : 'unauthorized', null);
         }
+        // kept in memory for at least a minute, so a ttl of 0 does not mean one request per file
+        $grant['until'] = max((int)($grant['until'] ?? 0), time() + 60);
         self::$grants[$id] = $grant;
         return ['share' => $grant['share'], 'license' => $grant['license']];
+    }
+
+    /**
+     * Failures are remembered per host (domain, addresses, path): a refused check from one
+     * context (CLI, another virtual host) must not lock out a context that is licensed.
+     */
+    private static function negFile(string $dir, string $id, array $host): string
+    {
+        $ctx = [$host['domain'] ?? '', $host['ips'] ?? [], $host['macs'] ?? [], $host['path'] ?? ''];
+        return $dir . '/n-' . hash('sha256', $id . "\0" . json_encode($ctx)) . '.json';
     }
 
     /** @return array{share:string,license:array,resp:array,kp:string} */
@@ -467,8 +501,11 @@ final class Loader
         if (!is_array($resp)) {
             throw self::exception('unreachable', null);
         }
+        // Not a signed answer to this request: a rate limit (429), proxy/WAF error page, captive
+        // portal or a misconfigured URL. That is no statement about the license, so it is handled
+        // like an unreachable server (a cached grant stays usable within ttl + grace).
         if (!self::verifySigned($resp, (string)$srv['pk']) || ($resp['nonce'] ?? null) !== $nonce || ($resp['v'] ?? null) !== 1) {
-            throw self::exception('invalid', null);
+            throw self::exception('unreachable', null);
         }
         $status = (string)($resp['status'] ?? 'invalid');
         $msg = isset($resp['message']) && is_string($resp['message']) && $resp['message'] !== '' ? $resp['message'] : null;
@@ -480,7 +517,8 @@ final class Loader
         if ($share === null) {
             throw self::exception('invalid', null);
         }
-        return ['share' => $share, 'license' => is_array($resp['license'] ?? null) ? $resp['license'] : [], 'resp' => $resp, 'kp' => $kp];
+        return ['share' => $share, 'license' => is_array($resp['license'] ?? null) ? $resp['license'] : [], 'resp' => $resp, 'kp' => $kp,
+            'until' => time() + max(0, min(self::MAX_TTL, (int)($resp['ttl'] ?? 0)))];
     }
 
     private static function verifySigned(array $resp, string $pkB64): bool
@@ -544,6 +582,7 @@ final class Loader
             'license' => is_array($resp['license'] ?? null) ? $resp['license'] : [],
             'fresh' => $expires > time(),
             'in_grace' => $expires + $grace > time(),
+            'until' => $expires,
         ];
     }
 
@@ -699,7 +738,7 @@ final class Loader
         unset(self::$grants[$id]);
         $dir = self::cacheDir();
         if ($dir !== null) {
-            @unlink($dir . '/n-' . $id . '.json');
+            @unlink(self::negFile($dir, $id, self::hostInfo()));
         }
     }
 
@@ -827,7 +866,14 @@ final class Loader
     {
         $domain = self::$config['domain'] ?? (getenv('PYP_DOMAIN') ?: null);
         if (!is_string($domain) || $domain === '') {
-            $domain = $_SERVER['SERVER_NAME'] ?? ($_SERVER['HTTP_HOST'] ?? (string)gethostname());
+            // nginx reports "_" (catch-all) or the regex itself for "server_name ~..." vhosts
+            $sn = $_SERVER['SERVER_NAME'] ?? '';
+            $domain = is_string($sn) && $sn !== '' && $sn !== '_' && $sn[0] !== '~'
+                ? $sn : ($_SERVER['HTTP_HOST'] ?? (string)gethostname());
+        }
+        $cli = PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg';
+        if ($cli && !isset(self::$config['domain']) && !getenv('PYP_DOMAIN')) {
+            $domain = '';   // no request, so no domain: the machine's hostname says nothing about the site
         }
         $domain = rtrim(strtolower((string)preg_replace('/:\d+$/', '', (string)$domain)), '.');
         if (!preg_match('/^(\[[0-9a-f:.]+\]|[a-z0-9._-]{1,253})$/', $domain)) {
@@ -852,6 +898,7 @@ final class Loader
             'ips'      => array_values(array_unique($ips)),
             'macs'     => self::macs(),
             'path'     => self::installPath(),
+            'sapi'     => PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg' ? 'cli' : 'web',
         ];
     }
 
@@ -975,7 +1022,9 @@ final class Loader
                 return 'path';
             }
         }
-        if (!empty($lic['domains'])) {
+        // CLI without a configured domain (cron, artisan) has none to check; set PYP_DOMAIN to enforce it
+        $noDomain = ($host['sapi'] ?? 'web') === 'cli' && (string)($host['domain'] ?? '') === '';
+        if (!empty($lic['domains']) && !$noDomain) {
             $d = (string)($host['domain'] ?? '');
             $ok = false;
             foreach ((array)$lic['domains'] as $pat) {

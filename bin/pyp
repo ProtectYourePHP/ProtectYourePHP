@@ -26,7 +26,7 @@ ProtectYourePHP - open source PHP encoder & licensing
       --exclude=tests/*,*.md    skip files (fnmatch on the relative path)
       --message-missing=TEXT --message-expired=TEXT --message-unauthorized=TEXT
       --message-unreachable=TEXT --message-invalid=TEXT
-      --grace=SECONDS           allow cached key this long if server is unreachable
+      --grace=SECONDS           allow cached key this long if server is unreachable (default 259200 = 72 h)
       --loader-dir=pyp          where the loader + activate.php are placed (inside --out)
       --activation-url=URL      URL of activate.php if it cannot be derived from DOCUMENT_ROOT
       --allow-change            allow replacing an active license on the activation page
@@ -131,7 +131,7 @@ switch ($cmd) {
                 'data_ext' => array_map('strtolower', list_($o['data-ext'] ?? null)),
                 'exclude' => list_($o['exclude'] ?? null),
                 'messages' => $messages,
-                'grace' => (int)($o['grace'] ?? 0),
+                'grace' => (int)($o['grace'] ?? 259200),
                 'loader_dir' => (string)($o['loader-dir'] ?? 'pyp'),
                 'activation_url' => isset($o['activation-url']) ? (string)$o['activation-url'] : null,
                 'allow_change' => isset($o['allow-change']),
