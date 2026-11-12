@@ -1,0 +1,134 @@
+# PYP - ProtectYourePHP
+
+**PYP** (long name **ProtectYourePHP**) is an open source alternative to ionCube: encrypt PHP projects, ship a small loader, and control
+usage through a license URL that answers in a fixed, signed JSON format
+([protocol](docs/license-protocol.md)). Unlicensed visitors are sent to an activation page.
+
+| Component | PHP versions | Requires |
+|---|---|---|
+| Encoder / CLI / license server | 8.1 - 8.5 | `ext-sodium`, `ext-tokenizer` |
+| Loader (runs on the customer's server) | 7.4 - 8.5 | `ext-sodium` (bundled with PHP), `ext-curl` optional |
+| Native extension `pyp` (optional) | 8.1 - 8.5 | see [docs/native-extension.md](docs/native-extension.md) |
+
+Tested with PHP 8.4 and 8.5 (encoder, server, loader), plus the loader on PHP 7.4.
+The encoder understands PHP 8.4 syntax (property hooks, asymmetric visibility).
+
+## Quick start
+
+```bash
+php bin/pyp init --name="My Shop"                  # project id, secrets, signing key
+php bin/pyp encode --src=./app --out=./dist \
+    --server=https://license.example.com/ \
+    --product="My Shop" --data-ext=xml,tpl,twig --exclude="tests/*" \
+    "--message-expired=Trial over - visit example.com"
+
+php bin/pyp license:create --domain=*.customer.com --expires=365d   # -> PYP-XXXXX-XXXXX-...
+php bin/pyp serve --listen=127.0.0.1:8080                           # reference endpoint
+```
+
+`dist/pyp/` contains everything the customer's server needs:
+
+```
+dist/pyp/pyp-loader.php   loader (required automatically by every encoded file)
+dist/pyp/activate.php     activation page
+dist/pyp/pyp-config.php   public project settings (no secrets)
+dist/pyp/license.php      written by the activation page, never served (PHP guard)
+```
+
+Run `php tests/e2e.php` for the end-to-end test suite.
+
+## License activation flow
+
+When an encoded file is loaded without a valid license (missing, expired, revoked, wrong
+domain/IP/MAC), the loader stops before any protected code runs and:
+
+* **browser requests** get a `302` to `/pyp/activate.php?reason=...&return=/original/page`,
+* **JSON / XHR requests** get `403 {"error": "...", "message": "...", "activation_url": "..."}`,
+* **CLI** gets the message on stderr and exit code 255,
+* if `activate.php` is not reachable by URL (loader outside the document root, set
+  `--activation-url` to override), the activation form is **rendered in place** with status 403.
+
+The activation page checks the key against the license server before it is stored, and
+returns the visitor to the original page. Measures against bypasses on that page:
+
+* nothing protected is executed there, so it cannot redirect to itself,
+* CSRF token (`SameSite=Strict` cookie + form field), CSP, `X-Frame-Options: DENY`, no-store,
+* an **active license cannot be replaced** by visitors (unless `--allow-change`),
+* `return` only accepts local paths (no open redirects), 10 attempts per IP / 15 minutes,
+* the license file starts with a PHP guard, so requesting it returns 404 instead of the key.
+
+Customers can also provide the key via env `PYP_LICENSE`, `Loader::configure(['license' => ...])`,
+or `encode --license=KEY` (per-customer builds).
+
+## Feature map
+
+| ionCube feature | here |
+|---|---|
+| Encrypted code | XChaCha20-Poly1305 per file, header authenticated (tampering = refuse to run) |
+| Dynamic keys | key share issued by the license URL at runtime, sealed to an ephemeral key |
+| External keys | `--external-key=file:/path` or `env:NAME`; the secret is never in the encoded files |
+| Obfuscation | comments stripped, local variables renamed per scope (see limits) |
+| Non-PHP files | `--data-ext=xml,tpl,...`; read with `\Pyp\Loader::read($file)` |
+| Custom messages | `--message-missing/expired/unauthorized/unreachable/invalid`, or per license from the server |
+| Unlimited encoding | no limits, no server needed to encode |
+| Expiry, domain, IP restrictions | `expires_at`, `domains` (`*.x.com`), `ips` (CIDR), enforced by server and loader |
+| MAC binding | `macs` (native extension, `net_get_interfaces()`, `/sys/class/net`, or `exec`) |
+| Trials / subscriptions | short `expires_at` + `ttl`, `license:revoke` any time |
+| Online licensing portal | `LicenseServer` class + locked JSON store; replace the store with your DB / admin UI |
+| New PHP versions | encoded code is kept as source, so it runs on any PHP version that runs the original |
+
+## Security model
+
+What the loader enforces:
+
+* Every file has its own key: `HKDF(embedded part, external key, server share)`.
+  With `--server`, files cannot be decrypted without a valid answer from the license URL.
+* Server answers are Ed25519-signed and bound to a per-request nonce. The cache stores the
+  complete **signed** answer, so editing the cache cannot extend TTL or remove restrictions.
+* Failures are cached for 30-60 s so an unlicensed site does not flood the license server.
+  A valid cached key is used while the server is down (`ttl`, plus `--grace` seconds).
+* Decrypted PHP is only handed to `include`/`require`. `file_get_contents('pyp://...')`,
+  `highlight_file()`, `show_source()`, `php_strip_whitespace()`, `SplFileObject` and calling
+  `Loader::open()` from another file are refused.
+* Encoder: refuses to copy `pyp.project.json` / `pyp.server.json` into a distribution,
+  writes atomically, warns about plain-http license URLs.
+* License server: input validation, flock'ed storage, per-IP rate limit
+  (`PYP_RATE_LIMIT`, default 120/min), 16 KB request limit, 125-bit license keys.
+
+What it cannot do (pure PHP):
+
+* **No bytecode protection yet.** Decrypted source exists in PHP memory while it is
+  compiled. Someone who controls the server can patch `pyp-loader.php` and dump it. The
+  server and external keys stop copying the files elsewhere; they do not stop the licensed
+  server's owner. The native extension ([roadmap](docs/native-extension.md)) is the path to
+  close this.
+* Domain/IP/MAC values are reported by the client and protect against careless copying,
+  not against a modified loader.
+* OPcache does not cache code loaded through the `pyp://` wrapper.
+
+## Limits
+
+* Obfuscation renames local variables only (not classes/methods/properties - they are
+  public API and reflection targets). Scopes using `eval`, `include`, `compact`, `extract`,
+  `$$` keep their names; parameters of public functions keep their names (named arguments).
+* `__FILE__`/`__DIR__` are rewritten to the original path. Inside constant expressions
+  (`const`, property/parameter defaults, attributes) they stay `pyp://<original path>`,
+  which the loader's stream wrapper resolves for include, file reads, stat and directory
+  listing. The encoder lists these places.
+* Docblock annotations are stripped by default (`--keep-docblocks` for Doctrine/Symfony/PHPUnit).
+* Files using `__halt_compiler()` data (e.g. phar stubs) should be excluded.
+* Protect the entry points too: code in files that are not encoded keeps running without a license.
+
+## Layout
+
+```
+bin/pyp                  CLI (init, encode, license:create|list|revoke, serve)
+loader/pyp-loader.php    runtime loader + activation page, single file, shipped to customers
+src/Encoder.php          container, stub and loader directory generation
+src/Obfuscator.php       token based transformer
+src/LicenseServer.php    reference license endpoint logic
+server/index.php         HTTP entry point of the license server
+ext/                     native PHP extension "pyp" (PIE package)
+docs/                    license protocol, extension + publishing guide
+tests/e2e.php            end-to-end tests (CLI, HTTP activation, attacks, PHP 8.4 syntax)
+```

@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.zip binary
+*.png binary
+
+/tests export-ignore
+/.github export-ignore

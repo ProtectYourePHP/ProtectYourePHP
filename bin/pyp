@@ -1,0 +1,210 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../src/Encoder.php';
+require_once __DIR__ . '/../src/LicenseServer.php';
+
+use Pyp\Encoder;
+use Pyp\LicenseServer;
+
+const USAGE = <<<TXT
+ProtectYourePHP - open source PHP encoder & licensing
+
+  pyp init [--project-file=pyp.project.json] [--name=NAME]
+  pyp encode --src=DIR --out=DIR [options]
+      --project-file=FILE       default pyp.project.json
+      --server=URL              license endpoint (enables dynamic server-issued keys)
+      --license=KEY             bake a license key into the build
+      --external-key=file:PATH | env:NAME   key that lives only on the target server
+      --external-key-value=SECRET           (generated and printed when omitted)
+      --product=NAME            product name shown on the activation page
+      --no-obfuscate            keep local variable names
+      --keep-docblocks          do not strip /** */ comments
+      --ext=php,phtml,inc       extensions encoded as PHP
+      --data-ext=xml,tpl,twig   extensions encrypted as data files
+      --exclude=tests/*,*.md    skip files (fnmatch on the relative path)
+      --message-missing=TEXT --message-expired=TEXT --message-unauthorized=TEXT
+      --message-unreachable=TEXT --message-invalid=TEXT
+      --grace=SECONDS           allow cached key this long if server is unreachable
+      --loader-dir=pyp          where the loader + activate.php are placed (inside --out)
+      --activation-url=URL      URL of activate.php if it cannot be derived from DOCUMENT_ROOT
+      --allow-change            allow replacing an active license on the activation page
+  pyp license:create [--data=pyp.server.json] [--project-file=...] [--expires=30d|2027-01-01]
+      [--domain=a.com,*.b.com] [--ip=1.2.3.4,10.0.0.0/8] [--mac=aa:bb:..] [--message=TEXT]
+      [--ttl=3600] [--note=TEXT]
+  pyp license:list   [--data=...]
+  pyp license:revoke KEY [--data=...]
+  pyp serve [--listen=127.0.0.1:8080] [--data=pyp.server.json]
+
+TXT;
+
+function parseArgs(array $argv): array
+{
+    $opts = [];
+    $pos = [];
+    foreach ($argv as $a) {
+        if (strncmp($a, '--', 2) === 0) {
+            $kv = explode('=', substr($a, 2), 2);
+            $opts[$kv[0]] = $kv[1] ?? true;
+        } else {
+            $pos[] = $a;
+        }
+    }
+    return [$opts, $pos];
+}
+
+function fail(string $m): never
+{
+    fwrite(STDERR, "error: $m\n");
+    exit(1);
+}
+
+function loadProject(array $o): array
+{
+    $f = $o['project-file'] ?? 'pyp.project.json';
+    if (!is_file($f)) {
+        fail("project file '$f' not found - run 'pyp init' first");
+    }
+    return json_decode(file_get_contents($f), true) ?: fail('invalid project file');
+}
+
+function list_(?string $v): array
+{
+    return $v === null || $v === true ? [] : array_values(array_filter(array_map('trim', explode(',', (string)$v))));
+}
+
+[$o, $pos] = parseArgs(array_slice($argv, 1));
+$cmd = array_shift($pos) ?? '';
+$dataFile = (string)($o['data'] ?? 'pyp.server.json');
+
+switch ($cmd) {
+    case 'init':
+        $f = (string)($o['project-file'] ?? 'pyp.project.json');
+        if (is_file($f)) {
+            fail("$f already exists");
+        }
+        $kp = sodium_crypto_sign_keypair();
+        $proj = [
+            'project' => 'prj_' . bin2hex(random_bytes(6)),
+            'name' => (string)($o['name'] ?? 'My project'),
+            'secret' => base64_encode(random_bytes(32)),
+            'sign_public' => base64_encode(sodium_crypto_sign_publickey($kp)),
+            'sign_secret' => base64_encode(sodium_crypto_sign_secretkey($kp)),
+        ];
+        file_put_contents($f, json_encode($proj, JSON_PRETTY_PRINT));
+        echo "Created $f  (keep it private - it contains the project secret and signing key)\n";
+        break;
+
+    case 'encode':
+        $project = loadProject($o);
+        if (empty($o['src']) || empty($o['out'])) {
+            fail('--src and --out are required');
+        }
+        $external = null;
+        if (!empty($o['external-key'])) {
+            [$type, $ref] = array_pad(explode(':', (string)$o['external-key'], 2), 2, '');
+            if (!in_array($type, ['file', 'env'], true) || $ref === '') {
+                fail('--external-key must be file:PATH or env:NAME');
+            }
+            $secret = (string)($o['external-key-value'] ?? base64_encode(random_bytes(24)));
+            $external = ['type' => $type, 'ref' => $ref, 'secret' => $secret];
+            echo "External key value (store it in the $type '$ref' on the target server):\n  $secret\n";
+        }
+        $messages = [];
+        foreach (['missing', 'expired', 'unauthorized', 'unreachable', 'invalid', 'key', 'corrupt'] as $t) {
+            if (isset($o["message-$t"])) {
+                $messages[$t] = (string)$o["message-$t"];
+            }
+        }
+        try {
+            $enc = new Encoder([
+                'project' => $project,
+                'product' => isset($o['product']) ? (string)$o['product'] : null,
+                'server_url' => isset($o['server']) ? (string)$o['server'] : null,
+                'license' => isset($o['license']) ? (string)$o['license'] : null,
+                'external' => $external,
+                'obfuscate' => !isset($o['no-obfuscate']),
+                'keep_docblocks' => isset($o['keep-docblocks']),
+                'php_ext' => array_map('strtolower', list_($o['ext'] ?? 'php,phtml,inc')),
+                'data_ext' => array_map('strtolower', list_($o['data-ext'] ?? null)),
+                'exclude' => list_($o['exclude'] ?? null),
+                'messages' => $messages,
+                'grace' => (int)($o['grace'] ?? 0),
+                'loader_dir' => (string)($o['loader-dir'] ?? 'pyp'),
+                'activation_url' => isset($o['activation-url']) ? (string)$o['activation-url'] : null,
+                'allow_change' => isset($o['allow-change']),
+            ]);
+            $s = $enc->encodeDirectory((string)$o['src'], (string)$o['out']);
+        } catch (\InvalidArgumentException | \RuntimeException $e) {
+            fail($e->getMessage());
+        }
+        foreach ($enc->warnings as $w) {
+            fwrite(STDERR, "warning: $w\n");
+        }
+        echo "Encoded {$s['php']} PHP file(s), {$s['data']} data file(s), copied {$s['copied']}, skipped {$s['skipped']} file(s).\n";
+        break;
+
+    case 'license:create':
+        $project = loadProject($o);
+        $exp = $o['expires'] ?? null;
+        if (is_string($exp)) {
+            $ts = preg_match('/^(\d+)d$/', $exp, $m) ? time() + 86400 * (int)$m[1] : strtotime($exp);
+            $ts !== false or fail('invalid --expires');
+            $exp = gmdate('c', $ts);
+        }
+        foreach (list_($o['ip'] ?? null) as $rule) {
+            $ip = explode('/', $rule, 2)[0];
+            filter_var($ip, FILTER_VALIDATE_IP) or fail("invalid --ip entry: $rule");
+        }
+        foreach (list_($o['mac'] ?? null) as $mac) {
+            preg_match('/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i', $mac) or fail("invalid --mac entry: $mac");
+        }
+        $key = LicenseServer::generateKey();
+        (new LicenseServer($dataFile))->update(static function (array &$d) use ($project, $key, $exp, $o) {
+            $d['projects'][$project['project']] ??= [
+                'name' => $project['name'] ?? '', 'secret' => $project['secret'], 'sign_secret' => $project['sign_secret'],
+            ];
+            $d['licenses'][$key] = [
+                'project' => $project['project'], 'id' => 'lic_' . bin2hex(random_bytes(4)),
+                'expires_at' => $exp, 'domains' => array_map('strtolower', list_($o['domain'] ?? null)),
+                'ips' => list_($o['ip'] ?? null), 'macs' => array_map('strtolower', list_($o['mac'] ?? null)),
+                'revoked' => false, 'message' => isset($o['message']) ? (string)$o['message'] : null,
+                'ttl' => max(0, (int)($o['ttl'] ?? 3600)), 'note' => (string)($o['note'] ?? ''),
+            ];
+        });
+        echo "$key\n";
+        break;
+
+    case 'license:list':
+        foreach ((new LicenseServer($dataFile))->load()['licenses'] as $k => $l) {
+            printf("%s  %s  exp=%s  dom=%s ip=%s mac=%s%s\n", $k, $l['project'], $l['expires_at'] ?? '-',
+                implode(',', $l['domains']), implode(',', $l['ips']), implode(',', $l['macs']),
+                $l['revoked'] ? '  [REVOKED]' : '');
+        }
+        break;
+
+    case 'license:revoke':
+        $key = Pyp\Loader::normalizeKey($pos[0] ?? fail('license key required'));
+        $found = (new LicenseServer($dataFile))->update(static function (array &$d) use ($key) {
+            if (!isset($d['licenses'][$key])) {
+                return false;
+            }
+            $d['licenses'][$key]['revoked'] = true;
+            return true;
+        });
+        $found or fail('unknown license');
+        echo "Revoked $key (takes effect when the customer's cached key expires, at most after its ttl)\n";
+        break;
+
+    case 'serve':
+        putenv('PYP_SERVER_DATA=' . (realpath($dataFile) ?: $dataFile));
+        $listen = (string)($o['listen'] ?? '127.0.0.1:8080');
+        echo "License endpoint: http://$listen/  (data: $dataFile)\n";
+        passthru(escapeshellarg(PHP_BINARY) . ' -S ' . escapeshellarg($listen) . ' -t ' . escapeshellarg(__DIR__ . '/../server'));
+        break;
+
+    default:
+        echo USAGE;
+        exit($cmd === '' ? 0 : 1);
+}

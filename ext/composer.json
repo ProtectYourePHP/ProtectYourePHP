@@ -1,0 +1,22 @@
+{
+    "name": "protectyourephp/pyp-ext",
+    "type": "php-ext",
+    "description": "PYP (ProtectYourePHP) - native PHP extension for the PYP loader",
+    "keywords": ["php-extension", "encoder", "licensing", "protection"],
+    "license": "MIT",
+    "homepage": "https://github.com/ProtectYourePHP/pyp-ext",
+    "support": {
+        "issues": "https://github.com/ProtectYourePHP/ProtectYourePHP/issues",
+        "source": "https://github.com/ProtectYourePHP/pyp-ext"
+    },
+    "require": {
+        "php": ">=8.1"
+    },
+    "php-ext": {
+        "extension-name": "pyp",
+        "priority": 80,
+        "support-zts": true,
+        "support-nts": true,
+        "configure-options": []
+    }
+}

@@ -1,0 +1,43 @@
+{
+    "name": "protectyourephp/protectyourephp",
+    "description": "PYP (ProtectYourePHP) - open source PHP encoder and licensing system, an alternative to ionCube",
+    "type": "library",
+    "keywords": ["encoder", "obfuscator", "licensing", "license-server", "ioncube", "code-protection"],
+    "license": "MIT",
+    "homepage": "https://github.com/ProtectYourePHP/ProtectYourePHP",
+    "support": {
+        "issues": "https://github.com/ProtectYourePHP/ProtectYourePHP/issues",
+        "source": "https://github.com/ProtectYourePHP/ProtectYourePHP",
+        "docs": "https://github.com/ProtectYourePHP/docs"
+    },
+    "require": {
+        "php": ">=8.1",
+        "ext-json": "*",
+        "ext-sodium": "*",
+        "ext-tokenizer": "*"
+    },
+    "suggest": {
+        "ext-curl": "Faster and more robust license server requests (the loader falls back to streams)",
+        "ext-pyp": "Native helpers for the loader, see ext/ (install with PIE: protectyourephp/pyp-ext)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Pyp\\": "src/"
+        },
+        "files": [
+            "loader/pyp-loader.php"
+        ]
+    },
+    "bin": [
+        "bin/pyp"
+    ],
+    "scripts": {
+        "test": "@php tests/e2e.php"
+    },
+    "archive": {
+        "exclude": ["/tests", "/ext", "/.github"]
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  library:
+    name: Library + loader (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: sodium, curl, tokenizer
+          coverage: none
+          ini-values: error_reporting=-1, display_errors=stderr
+      - name: Lint
+        run: for f in bin/pyp src/*.php loader/*.php server/*.php tests/*.php; do php -l "$f" >/dev/null || exit 1; done
+      - name: Validate composer.json
+        run: composer validate --strict --no-check-lock
+      - name: End-to-end tests
+        run: php tests/e2e.php
+
+  legacy-loader:
+    name: Loader on PHP 7.4 (files encoded with 8.4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          extensions: sodium, curl
+          coverage: none
+      - run: php -l loader/pyp-loader.php
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: sodium, curl, tokenizer
+          coverage: none
+      - name: End-to-end tests incl. legacy loader run
+        run: PYP_LEGACY_PHP=/usr/bin/php7.4 php tests/e2e.php
+
+  extension:
+    name: Extension (PHP ${{ matrix.php }}, ${{ matrix.ts }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
+        ts: ['nts']
+        include:
+          - php: '8.4'
+            ts: 'ts'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        env:
+          phpts: ${{ matrix.ts }}
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: sodium, curl, tokenizer
+          tools: phpize, php-config
+          coverage: none
+      - name: Build
+        working-directory: ext
+        run: |
+          phpize
+          ./configure --enable-pyp
+          make -j"$(nproc)" CFLAGS="-g -O2 -Wall -Werror"
+      - name: phpt tests
+        working-directory: ext
+        run: make test TESTS="tests" NO_INTERACTION=1 REPORT_EXIT_STATUS=1
+      - name: End-to-end tests with the extension loaded
+        run: PYP_EXT_PATH="$PWD/ext/modules/pyp.so" php tests/e2e.php

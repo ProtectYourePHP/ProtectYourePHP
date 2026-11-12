@@ -1,0 +1,12 @@
+// config.w32 for extension pyp (ProtectYourePHP)
+
+ARG_ENABLE("pyp", "ProtectYourePHP native helpers", "no");
+
+if (PHP_PYP != "no") {
+	if (CHECK_LIB("Iphlpapi.lib", "pyp", PHP_PYP)) {
+		EXTENSION("pyp", "pyp.c", PHP_PYP_SHARED, "/DZEND_ENABLE_STATIC_TSRMLS_CACHE=1");
+		AC_DEFINE("HAVE_PYP", 1, "Whether ProtectYourePHP support is enabled");
+	} else {
+		WARNING("pyp not enabled; Iphlpapi.lib not found");
+	}
+}
