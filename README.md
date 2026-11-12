@@ -4,6 +4,10 @@
 usage through a license URL that answers in a fixed, signed JSON format
 ([protocol](docs/license-protocol.md)). Unlicensed visitors are sent to an activation page.
 
+**Documentation:** [ProtectYourePHP/docs](https://github.com/ProtectYourePHP/docs) ·
+**License server with admin UI:** [pyp-license-server](https://github.com/ProtectYourePHP/pyp-license-server) ·
+**Native extension:** [pyp-ext](https://github.com/ProtectYourePHP/pyp-ext)
+
 | Component | PHP versions | Requires |
 |---|---|---|
 | Encoder / CLI / license server | 8.1 - 8.5 | `ext-sodium`, `ext-tokenizer` |
