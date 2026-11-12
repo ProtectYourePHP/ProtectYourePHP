@@ -312,6 +312,11 @@ check('wrong domain rejected', $c !== 0 && strpos($e, 'not licensed') !== false,
 check('wrong ip rejected', $c !== 0 && strpos($e, 'not licensed') !== false, "$o $e");
 [$o, $e, $c] = runApp(lic(['--mac=de:ad:be:ef:00:01']));
 check('wrong mac rejected', $c !== 0 && strpos($e, 'not licensed') !== false, "$o $e");
+[$myMac] = php(['-r', 'require $argv[1]; echo \Pyp\Loader::hostInfo()["macs"][0] ?? "";', "$root/loader/pyp-loader.php"]);
+if ($myMac !== '') {
+    [$o, $e, $c] = runApp(lic(["--mac=$myMac"]));
+    check("license bound to this machine's MAC runs ($myMac)", $c === 0 && $o === $expected, "$o $e");
+}
 [$o, $e, $c] = runApp(lic(['--expires=2020-01-01']));
 check('expired license shows custom message', $c !== 0 && strpos($e, 'Trial over - buy at example.com') !== false, "$o $e");
 $rev = lic([]);

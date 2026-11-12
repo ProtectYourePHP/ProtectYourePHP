@@ -4,9 +4,11 @@ name: Build
 on:
   push:
   pull_request:
+  release:
+    types: [published]
 
 permissions:
-  contents: read
+  contents: write   # attach Linux builds to releases
 
 jobs:
   linux:
@@ -36,6 +38,17 @@ jobs:
           make -j"$(nproc)" CFLAGS="-g -O2 -Wall -Werror"
       - name: Test
         run: make test TESTS="tests" NO_INTERACTION=1 REPORT_EXIT_STATUS=1
+      - name: Attach Linux build to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name="php_pyp-${{ github.event.release.tag_name }}-${{ matrix.php }}-${{ matrix.ts }}-linux-x86_64"
+          mkdir "$name"
+          cp modules/pyp.so README.md LICENSE "$name/"
+          { php -v | head -1; echo "PHP API: $(php-config --phpapi)"; echo "Thread safety: ${{ matrix.ts }}"; } > "$name/BUILD-INFO.txt"
+          tar -czf "$name.tar.gz" "$name"
+          gh release upload "${{ github.event.release.tag_name }}" "$name.tar.gz" --clobber
 
   macos:
     name: macOS PHP 8.4
