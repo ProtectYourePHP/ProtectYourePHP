@@ -478,7 +478,10 @@ if ($legacy) {
 
 echo "native extension (--require-ext)\n";
 $outExt = "$tmp/out-ext";
-[$o, $e, $c] = pyp(['encode', "--src=$src", "--out=$outExt", "--server=$url", '--data-ext=xml', '--require-ext']);
+// no --data-ext here: the sample reads its template through a pyp:// path (__DIR__ in a constant
+// expression), which only exists without the extension. With --require-ext, __DIR__ is the real
+// path and encrypted data files are read with \Pyp\Loader::read().
+[$o, $e, $c] = pyp(['encode', "--src=$src", "--out=$outExt", "--server=$url", '--require-ext']);
 check('encode --require-ext', $c === 0 && strpos($e, 'pyp:// path') === false, "$o\n$e");
 check('source not readable in --require-ext output', strpos((string)file_get_contents("$outExt/lib/Calc.php"), 'secretTotal') === false);
 $extEnv = ['PYP_LICENSE' => $good, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => $cliCache];

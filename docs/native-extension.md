@@ -20,7 +20,9 @@ detected automatically (`function_exists('pyp_macs')`).
   extension such files refuse to run, and the PHP loader refuses to decrypt them.
   Current limits: the file key still passes through PHP code, decryption calls ext-sodium,
   and protected files are compiled on every request (not stored in OPcache) so the license
-  is checked each time. Data files (`--data-ext`) are still read through the PHP loader.
+  is checked each time. Data files (`--data-ext`) are still decrypted by the PHP loader: read them with
+  `\Pyp\Loader::read($file)`. A plain `file_get_contents(__DIR__ . '/x.xml')` returns the
+  encrypted bytes, because `__DIR__` is the real path here and not a `pyp://` path.
 * `pyp_macs(): array` - MAC addresses via `getifaddrs()` (Linux/BSD/macOS) or
   `GetAdaptersAddresses()` (Windows). Works on hosts where `exec()` is disabled and
   `net_get_interfaces()` reports no MAC addresses (Linux).
