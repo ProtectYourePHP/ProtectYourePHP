@@ -20,6 +20,7 @@
 #include "zend_exceptions.h"
 #include "zend_stream.h"
 #include "zend_virtual_cwd.h"
+#include "main/php_streams.h"
 #include "php_pyp.h"
 #include "pyp_arginfo.h"
 
@@ -230,28 +231,46 @@ static uint32_t pyp_be32(const unsigned char *p)
 	return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16) | ((uint32_t) p[2] << 8) | (uint32_t) p[3];
 }
 
+/* Read exactly len bytes (PHP streams: no platform specific file API, honours open_basedir). */
+static int pyp_read_full(php_stream *stream, char *buf, size_t len)
+{
+	size_t done = 0;
+
+	while (done < len) {
+		ssize_t n = php_stream_read(stream, buf + done, len - done);
+
+		if (n <= 0) {
+			return 0;
+		}
+		done += (size_t) n;
+	}
+	return 1;
+}
+
 /* MAGIC | u32 headerLen | header(JSON) | ciphertext | u32 lengthOfEverythingBefore   (at the end of the file) */
 static int pyp_read_container(const char *path, zend_string **header, zend_string **cipher)
 {
-	FILE *fp = VCWD_FOPEN(path, "rb");
+	php_stream *stream = php_stream_open_wrapper((char *) path, "rb", IGNORE_URL, NULL);
 	unsigned char b[8];
-	long size;
+	zend_off_t size;
 	uint32_t len, hl;
 	int ok = 0;
 
 	*header = NULL;
 	*cipher = NULL;
-	if (!fp) {
+	if (!stream) {
 		return 0;
 	}
-	if (fseek(fp, -4, SEEK_END) != 0 || (size = ftell(fp)) < 8 || fread(b, 1, 4, fp) != 4) {
+	if (php_stream_seek(stream, -4, SEEK_END) != 0 || (size = php_stream_tell(stream)) < 8
+		|| !pyp_read_full(stream, (char *) b, 4)) {
 		goto done;
 	}
 	len = pyp_be32(b);
-	if (len < 10 || len > PYP_MAX_CONTAINER || (long) len > size) {
+	if (len < 10 || len > PYP_MAX_CONTAINER || (zend_off_t) len > size) {
 		goto done;
 	}
-	if (fseek(fp, size - (long) len, SEEK_SET) != 0 || fread(b, 1, 8, fp) != 8 || memcmp(b, "PYP1", 4) != 0) {
+	if (php_stream_seek(stream, size - (zend_off_t) len, SEEK_SET) != 0 || !pyp_read_full(stream, (char *) b, 8)
+		|| memcmp(b, "PYP1", 4) != 0) {
 		goto done;
 	}
 	hl = pyp_be32(b + 4);
@@ -260,8 +279,8 @@ static int pyp_read_container(const char *path, zend_string **header, zend_strin
 	}
 	*header = zend_string_alloc(hl, 0);
 	*cipher = zend_string_alloc(len - 8 - hl, 0);
-	if (fread(ZSTR_VAL(*header), 1, hl, fp) != hl
-		|| fread(ZSTR_VAL(*cipher), 1, ZSTR_LEN(*cipher), fp) != ZSTR_LEN(*cipher)) {
+	if (!pyp_read_full(stream, ZSTR_VAL(*header), hl)
+		|| !pyp_read_full(stream, ZSTR_VAL(*cipher), ZSTR_LEN(*cipher))) {
 		zend_string_release(*header);
 		zend_string_release(*cipher);
 		*header = NULL;
@@ -272,7 +291,7 @@ static int pyp_read_container(const char *path, zend_string **header, zend_strin
 	ZSTR_VAL(*cipher)[ZSTR_LEN(*cipher)] = 0;
 	ok = 1;
 done:
-	fclose(fp);
+	php_stream_close(stream);
 	return ok;
 }
 
