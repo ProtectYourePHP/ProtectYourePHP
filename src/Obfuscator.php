@@ -84,6 +84,9 @@ final class Obfuscator
                     break;
                 case T_FILE:
                 case T_DIR:
+                    if (!empty($opt['native_paths'])) {
+                        break;
+                    }
                     if ($this->inConstContext($tokens, $i)) {
                         // stays a pyp:// path, which the loader's stream wrapper resolves for include/fopen/stat
                         $this->warnings[] = sprintf('%s in a constant expression (line %d) resolves to a pyp:// path at runtime', $t->text, $t->line);

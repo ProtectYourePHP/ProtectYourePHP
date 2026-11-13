@@ -476,6 +476,55 @@ if ($legacy) {
     check('encoded file runs on legacy PHP via license server', $lo === '6|legacy-out' && $le === '', "$lo\n$le");
 }
 
+echo "native extension (--require-ext)\n";
+$outExt = "$tmp/out-ext";
+[$o, $e, $c] = pyp(['encode', "--src=$src", "--out=$outExt", "--server=$url", '--data-ext=xml', '--require-ext']);
+check('encode --require-ext', $c === 0 && strpos($e, 'pyp:// path') === false, "$o\n$e");
+check('source not readable in --require-ext output', strpos((string)file_get_contents("$outExt/lib/Calc.php"), 'secretTotal') === false);
+$extEnv = ['PYP_LICENSE' => $good, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => $cliCache];
+[$hook] = php(['-r', 'echo function_exists("pyp_ext_info") && !empty(pyp_ext_info()["features"]["compile_hook"]) ? "yes" : "no";']);
+// the PHP loader must never hand out the source of such a file, with or without the extension
+file_put_contents("$outExt/attacker.php", <<<'PHP'
+<?php
+require __DIR__ . '/pyp/pyp-loader.php';
+\Pyp\Loader::configure(['throw' => true]);
+\Pyp\Loader::register();
+$f = realpath(__DIR__ . '/lib/Calc.php');
+try { include 'pyp://' . $f; echo "include:LEAK\n"; } catch (\Pyp\LicenseException $e) { echo 'include:', $e->type, "\n"; }
+try { \Pyp\Loader::read($f); echo "read:LEAK\n"; } catch (\Pyp\LicenseException $e) { echo 'read:', $e->type, "\n"; }
+PHP);
+[$o, $e, $c] = php(["$outExt/attacker.php"], $extEnv);
+check('PHP loader refuses --require-ext files', $o === "include:extension\nread:denied", "$o\n$e");
+unlink("$outExt/attacker.php");
+if ($hook === 'yes') {
+    [$o, $e, $c] = php(["$outExt/main.php"], $extEnv);
+    check('compile hook runs the app, output identical, no notices', $c === 0 && $o === $expected && $e === '', "exit=$c\n$o\n--stderr--\n$e");
+    [$o, $e, $c] = php(['-d', 'opcache.enable=1', '-d', 'opcache.enable_cli=1', "$outExt/main.php"], $extEnv);
+    check('compile hook works with OPcache enabled', $c === 0 && $o === $expected && $e === '', "exit=$c\n$o\n--stderr--\n$e");
+    file_put_contents("$outExt/paths.php", "<?php\nnamespace Demo;\nconst HERE = __DIR__;\nrequire_once __DIR__ . '/lib/Calc.php';\nrequire_once __DIR__ . '/lib/Calc.php';\n"
+        . "echo basename(__FILE__), '|', (int)(HERE === __DIR__ && is_dir(HERE)), '|', count(array_filter(get_included_files(), static fn(\$f) => basename(\$f) === 'Calc.php')), \"\\n\";\n");
+    mkdir("$tmp/ext-one");
+    copy("$outExt/paths.php", "$tmp/ext-one/paths.php");
+    pyp(['encode', "--src=$tmp/ext-one", "--out=$outExt", "--server=$url", '--require-ext']);
+    [$o, $e, $c] = php(["$outExt/paths.php"], $extEnv);
+    check('real __FILE__/__DIR__ (also in constant expressions), include_once tracking', $c === 0 && $o === 'paths.php|1|1' && $e === '', "exit=$c\n$o\n$e");
+    [$o, $e, $c] = php(["$outExt/main.php"], ['PYP_LICENSE' => ''] + $extEnv);
+    check('compile hook: missing license reported', $c !== 0 && strpos($e, 'No license key') !== false && strpos($o . $e, 'secretTotal') === false, "exit=$c\n$o\n$e");
+    [$o, $e, $c] = php(["$outExt/main.php"], ['PYP_LICENSE' => $rev] + $extEnv);
+    check('compile hook: revoked license rejected', $c !== 0, "exit=$c\n$o\n$e");
+    $f = "$outExt/lib/Calc.php";
+    $bytes = (string)file_get_contents($f);
+    file_put_contents($f, substr_replace($bytes, chr(ord($bytes[strlen($bytes) - 40]) ^ 1), strlen($bytes) - 40, 1));
+    [$o, $e, $c] = php(["$outExt/main.php"], $extEnv);
+    check('compile hook: tampered file rejected', $c !== 0 && strpos($e, 'corrupt') !== false, "exit=$c\n$o\n$e");
+    file_put_contents($f, $bytes);
+    [$o, $e, $c] = php(["$out/main.php"], $extEnv);
+    check('files built without --require-ext still run with the hook installed', $c === 0 && $o === $expected && $e === '', "exit=$c\n$o\n$e");
+} else {
+    [$o, $e, $c] = php(["$outExt/main.php"], $extEnv);
+    check('without the extension the file refuses to run', $c !== 0 && $o === '' && strpos($e, 'requires the PYP PHP extension') !== false, "exit=$c\n$o\n$e");
+}
+
 echo "license server down\n";
 $fresh = lic(['--domain=*.example.com']);
 // build with a grace period + a grant that is already past its ttl

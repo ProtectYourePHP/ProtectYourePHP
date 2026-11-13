@@ -71,6 +71,7 @@ or `encode --license=KEY` (per-customer builds).
 | Encrypted code | XChaCha20-Poly1305 per file, header authenticated (tampering = refuse to run) |
 | Dynamic keys | key share issued by the license URL at runtime, sealed to an ephemeral key |
 | External keys | `--external-key=file:/path` or `env:NAME`; the secret is never in the encoded files |
+| Native loader | `--require-ext`: files only run with the `pyp` extension, decrypted source goes straight to the compiler |
 | Obfuscation | comments stripped, local variables renamed per scope (see limits) |
 | Non-PHP files | `--data-ext=xml,tpl,...`; read with `\Pyp\Loader::read($file)` |
 | Custom messages | `--message-missing/expired/unauthorized/unreachable/invalid`, or per license from the server |
@@ -102,7 +103,10 @@ What the loader enforces:
 What it cannot do (pure PHP):
 
 * **No bytecode protection yet.** Decrypted source exists in PHP memory while it is
-  compiled. Someone who controls the server can patch `pyp-loader.php` and dump it. The
+  compiled. Someone who controls the server can patch `pyp-loader.php` and dump it.
+  With `--require-ext` the source no longer passes through PHP code, but the file key
+  still does (until the license check moves into the extension), and the extension is
+  open source - it raises the effort, it is not a guarantee. The
   server and external keys stop copying the files elsewhere; they do not stop the licensed
   server's owner. The native extension ([roadmap](docs/native-extension.md)) is the path to
   close this.

@@ -38,7 +38,7 @@ final class LicenseException extends \RuntimeException
 
 final class Loader
 {
-    const VERSION = '1.3.0';
+    const VERSION = '1.4.0';
     const MAGIC = 'PYP1';
     const MAX_TTL = 604800;
     const MAX_RESPONSE = 65536;
@@ -55,6 +55,7 @@ final class Loader
         'key'          => 'A required decryption key is missing.',
         'corrupt'      => 'This protected file is corrupt or has been modified.',
         'denied'       => 'Access to this protected file was denied.',
+        'extension'    => 'This protected file requires the PYP PHP extension (pyp).',
         'updates'      => 'This version was released after the update period of your license ended. Please enter a license with a longer update period.',
     ];
 
@@ -253,6 +254,9 @@ final class Loader
         if (isset($h['built']) && (!is_int($h['built']) || $h['built'] < 0)) {
             return false;
         }
+        if (isset($h['loader']) && (!is_string($h['loader']) || !preg_match('#^(\.\./)*[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$#', $h['loader']))) {
+            return false;
+        }
         return true;
     }
 
@@ -316,6 +320,10 @@ final class Loader
             if ($header['kind'] !== $kind) {
                 throw self::exception($kind === 'data' ? 'denied' : 'corrupt', null);
             }
+            if ($kind === 'php' && !empty($header['ext'])) {
+                // built with --require-ext: only the native extension hands this code to the compiler
+                throw self::exception('extension', null);
+            }
             $key = self::resolveKey($header);
             try {
                 $plain = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt(
@@ -338,6 +346,48 @@ final class Loader
             self::fail($e->type, $header, $e->getMessage() !== '' ? $e->getMessage() : null);
             throw $e;
         }
+    }
+
+    // ==================================================================
+    // Native extension (files built with --require-ext)
+    // The extension's compile hook asks for the file key, decrypts in C and hands the source
+    // straight to the compiler. Licensing still happens here (loader API 2).
+    // ==================================================================
+
+    /** @var array|null [type, header, message] of the last refused --require-ext file */
+    private static $extError = null;
+
+    /**
+     * @internal called by the native extension: file key (32 bytes) + nonce (24 bytes),
+     * or null when the file may not run (the reason is reported by extFail()).
+     */
+    public static function extKey(string $file): ?string
+    {
+        $header = [];
+        try {
+            [$header] = self::parseContainer(self::realPath($file));
+            if ($header['kind'] !== 'php' || empty($header['ext'])) {
+                throw self::exception('corrupt', null);
+            }
+            return self::resolveKey($header) . (string)base64_decode((string)$header['nonce'], true);
+        } catch (LicenseException $e) {
+            self::$extError = [$e->type, $header, $e->getMessage() !== '' ? $e->getMessage() : null];
+            return null;
+        }
+    }
+
+    /** @internal called by the native extension when decryption failed */
+    public static function extReject(string $type): void
+    {
+        self::$extError = [isset(self::DEFAULT_MESSAGES[$type]) ? $type : 'corrupt', [], null];
+    }
+
+    /** @internal the extension compiles a call to this in place of a refused file */
+    public static function extFail(): void
+    {
+        [$type, $header, $message] = self::$extError ?? ['corrupt', [], null];
+        self::fail($type, $header, $message);
+        throw self::exception($type, $message);
     }
 
     private static function resolveKey(array $header): string

@@ -30,6 +30,8 @@ ProtectYourePHP - open source PHP encoder & licensing
       --loader-dir=pyp          where the loader + activate.php are placed (inside --out)
       --activation-url=URL      URL of activate.php if it cannot be derived from DOCUMENT_ROOT
       --allow-change            allow replacing an active license on the activation page
+      --require-ext             PHP files only run with the native "pyp" extension (0.2+): decrypted
+                                in C and compiled directly, the source never reaches PHP code
   pyp license:create [--data=pyp.server.json] [--project-file=...] [--expires=30d|2027-01-01]
       [--domain=a.com,*.b.com] [--ip=1.2.3.4,10.0.0.0/8] [--mac=aa:bb:..] [--path=/var/www/shop,/srv/*]
       [--type=premium] [--support-until=365d|DATE] [--updates-until=365d|DATE]
@@ -135,6 +137,7 @@ switch ($cmd) {
                 'loader_dir' => (string)($o['loader-dir'] ?? 'pyp'),
                 'activation_url' => isset($o['activation-url']) ? (string)$o['activation-url'] : null,
                 'allow_change' => isset($o['allow-change']),
+                'require_ext' => isset($o['require-ext']),
             ]);
             $s = $enc->encodeDirectory((string)$o['src'], (string)$o['out']);
         } catch (\InvalidArgumentException | \RuntimeException $e) {

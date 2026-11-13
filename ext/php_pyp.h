@@ -10,11 +10,11 @@
 extern zend_module_entry pyp_module_entry;
 #define phpext_pyp_ptr &pyp_module_entry
 
-#define PHP_PYP_VERSION "0.1.0"
+#define PHP_PYP_VERSION "0.2.0"
 
 /* Version of the contract between this extension and pyp-loader.php.
  * Bump when functions are added/changed so the loader can feature-detect. */
-#define PHP_PYP_LOADER_API 1
+#define PHP_PYP_LOADER_API 2
 
 #if defined(ZTS) && defined(COMPILE_DL_PYP)
 ZEND_TSRMLS_CACHE_EXTERN()

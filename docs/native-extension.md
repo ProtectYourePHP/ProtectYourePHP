@@ -10,8 +10,17 @@ ProtectYourePHP ships in two parts:
 The loader works without the extension. When the extension is installed it is
 detected automatically (`function_exists('pyp_macs')`).
 
-## What the extension does today (0.1.0)
+## What the extension does today (0.2.0)
 
+* **Compile hook** for files built with `pyp encode --require-ext`: the extension recognises
+  the PYP container when PHP compiles the file, obtains the file key from `pyp-loader.php`
+  (which still does the licensing), decrypts and passes the source straight to the compiler
+  under the file's real path. The decrypted source never becomes a PHP value, there is no
+  `Loader::open()` to patch, and `__FILE__` / `__DIR__` are the real paths. Without the
+  extension such files refuse to run, and the PHP loader refuses to decrypt them.
+  Current limits: the file key still passes through PHP code, decryption calls ext-sodium,
+  and protected files are compiled on every request (not stored in OPcache) so the license
+  is checked each time. Data files (`--data-ext`) are still read through the PHP loader.
 * `pyp_macs(): array` - MAC addresses via `getifaddrs()` (Linux/BSD/macOS) or
   `GetAdaptersAddresses()` (Windows). Works on hosts where `exec()` is disabled and
   `net_get_interfaces()` reports no MAC addresses (Linux).
@@ -91,5 +100,6 @@ plain PHP and can be patched. The extension is where this changes:
 4. **Format v2.** Containers that require `loader_api >= 2` can omit the embedded key
    part, so they only run where the native extension is installed.
 
-`pyp_ext_info()['features']['compile_hook']` turns `true` once step 1 lands, and
-`pyp-loader.php` will then hand over to the extension.
+Step 1 is implemented in 0.2.0 (`pyp_ext_info()['features']['compile_hook']` is `true`,
+`PYP_LOADER_API` is 2), without the OPcache part. Step 2 removes the remaining PHP
+round trip for the key.

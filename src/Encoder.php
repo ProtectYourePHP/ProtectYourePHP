@@ -26,6 +26,7 @@ require_once __DIR__ . '/Obfuscator.php';
  *   loader_dir     string  directory (relative to the output root) the loader is copied to
  *   activation_url ?string URL of activate.php (default: derived from DOCUMENT_ROOT at runtime)
  *   allow_change   bool    allow replacing an active license on the activation page
+ *   require_ext    bool    PHP files only run with the native extension's compile hook (pyp 0.2+)
  */
 final class Encoder
 {
@@ -43,7 +44,7 @@ final class Encoder
             'obfuscate' => true, 'strip_comments' => true, 'keep_docblocks' => false,
             'php_ext' => ['php', 'phtml', 'inc'], 'data_ext' => [], 'exclude' => [],
             'messages' => [], 'grace' => 259200, 'loader_dir' => 'pyp',
-            'activation_url' => null, 'allow_change' => false,
+            'activation_url' => null, 'allow_change' => false, 'require_ext' => false,
         ];
         $p = $this->o['project'] ?? null;
         $secret = is_array($p) ? base64_decode((string)($p['secret'] ?? ''), true) : false;
@@ -175,6 +176,7 @@ final class Encoder
     public function encodeString(string $plain, string $kind, string $loaderRel, string $label = ''): string
     {
         $shebang = '';
+        $native = $kind === 'php' && !empty($this->o['require_ext']);
         if ($kind === 'php') {
             if (strncmp($plain, '#!', 2) === 0) {
                 $nl = strpos($plain, "\n");
@@ -187,6 +189,7 @@ final class Encoder
                     'rename_vars' => (bool)$this->o['obfuscate'],
                     'strip_comments' => (bool)$this->o['strip_comments'],
                     'keep_docblocks' => (bool)$this->o['keep_docblocks'],
+                    'native_paths' => $native,   // compiled under its real path: __FILE__/__DIR__ need no rewriting
                 ]);
             } catch (\ParseError $e) {
                 throw new \RuntimeException("Syntax error in $label: " . $e->getMessage(), 0, $e);
@@ -231,6 +234,10 @@ final class Encoder
             'grace' => max(0, (int)$this->o['grace']),
             'built' => time(),   // checked against the license's "updates_until"
         ];
+        if ($native) {
+            $header['ext'] = 1;               // the PHP loader refuses the file, the extension's compile hook runs it
+            $header['loader'] = $loaderRel;   // where the hook finds pyp-loader.php (licensing), relative to the file
+        }
         $raw = json_encode($header, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         $key = Loader::deriveKey($embedded, $ext, $share, $fileId, $salt);
         $cipher = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt($plain, $raw, $nonce, $key);
@@ -239,6 +246,16 @@ final class Encoder
 
         if ($kind === 'data') {
             return $container;
+        }
+        if ($native) {
+            // With the extension loaded this stub is never compiled: the hook compiles the decrypted code instead.
+            return $shebang
+                . "<?php if(PHP_SAPI!=='cli'){http_response_code(500);}"
+                . "fwrite(PHP_SAPI==='cli'?STDERR:fopen('php://output','w'),"
+                . "function_exists('pyp_ext_info')&&!empty(pyp_ext_info()['features']['compile_hook'])"
+                . "?'ProtectYourePHP: this file was not handled by the pyp extension.'"
+                . ":'This application requires the PYP PHP extension (pyp) 0.2 or newer.');echo PHP_EOL;exit(255);\n__halt_compiler();"
+                . $container;
         }
         $lit = var_export('/' . $loaderRel, true);
         $stub = $shebang
