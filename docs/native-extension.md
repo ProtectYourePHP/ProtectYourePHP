@@ -73,7 +73,7 @@ The split repository is [`ProtectYourePHP/pyp-ext`](https://github.com/ProtectYo
 git subtree split --prefix=ext -b ext-release
 git push https://github.com/ProtectYourePHP/pyp-ext.git ext-release:main
 # release
-gh release create 0.1.0 --repo ProtectYourePHP/pyp-ext --target main --title "pyp 0.1.0" --notes "..."
+gh release create 0.2.0 --repo ProtectYourePHP/pyp-ext --target main --title "pyp 0.2.0" --notes "..."
 ```
 
 Then submit `https://github.com/ProtectYourePHP/pyp-ext` on Packagist (package name

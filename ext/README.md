@@ -1,23 +1,29 @@
 # PYP extension (`pyp`)
 
 Native PHP extension for **PYP (ProtectYourePHP)**, the open source PHP encoder and
-licensing system. The PYP loader works without it; when installed, the loader detects it and
-uses its native helpers automatically - no code changes needed.
+licensing system. Files built with `pyp encode --require-ext` only run with this extension.
+All other encoded files work without it; when installed, the loader detects it and uses its
+native helpers automatically - no code changes needed.
 
 > This repository is split from [`ProtectYourePHP/ProtectYourePHP`](https://github.com/ProtectYourePHP/ProtectYourePHP)
 > (`ext/`). Please open pull requests there.
 
-## What it does (0.1)
+## What it does (0.2)
 
 | | |
 |---|---|
+| Compile hook | runs files built with `pyp encode --require-ext`: the decrypted source goes straight to the PHP compiler and never reaches PHP code |
 | `pyp_macs(): array` | MAC addresses of all non-loopback interfaces (`aa:bb:cc:dd:ee:ff`) - natively, without `exec()` |
 | `pyp_ext_info(): array` | `version`, `loader_api`, `features` |
 | `PYP_EXT_VERSION`, `PYP_LOADER_API` | constants |
 
 The loader uses `pyp_macs()` for **MAC address binding** of licenses. Without the extension it
 falls back to `net_get_interfaces()`, `/sys/class/net` or `exec('ip link')` - which fails on many
-shared hosts. The next version adds a native decryption hook (see Roadmap).
+shared hosts.
+
+**Compile hook (new in 0.2).** Licensing still happens in `pyp-loader.php`, which hands the
+file key to the extension. Protected files are compiled on every request (they are not stored
+in OPcache yet). Encrypted data files are read with `\Pyp\Loader::read($file)`.
 
 Supported: PHP 8.1 - 8.5, NTS and ZTS, Linux x86_64, macOS, Windows x64.
 
@@ -37,13 +43,13 @@ php -i | grep extension_dir              # where extensions go
 ### 2a. Windows
 
 1. Download the zip matching your PHP from the [latest release](https://github.com/ProtectYourePHP/pyp-ext/releases/latest),
-   e.g. `php_pyp-0.1.0-8.4-nts-vs17-x86_64.zip`.
+   e.g. `php_pyp-0.2.0-8.4-nts-vs17-x86_64.zip`.
 2. Copy the DLL from the zip into your `extension_dir` (usually `C:\php\ext`) and **rename it to
-   `php_pyp.dll`** (in the zip it is called `php_pyp-0.1.0-8.4-nts-vs17-x86_64.dll`; PIE renames it automatically).
+   `php_pyp.dll`** (in the zip it is called `php_pyp-0.2.0-8.4-nts-vs17-x86_64.dll`; PIE renames it automatically).
 
    ```powershell
-   Expand-Archive php_pyp-0.1.0-8.4-nts-vs17-x86_64.zip -DestinationPath pyp
-   Copy-Item pyp\php_pyp-0.1.0-8.4-nts-vs17-x86_64.dll C:\php\ext\php_pyp.dll
+   Expand-Archive php_pyp-0.2.0-8.4-nts-vs17-x86_64.zip -DestinationPath pyp
+   Copy-Item pyp\php_pyp-0.2.0-8.4-nts-vs17-x86_64.dll C:\php\ext\php_pyp.dll
    ```
 
 3. Add to `php.ini`:
@@ -65,8 +71,8 @@ pie install protectyourephp/pyp-ext
 **Prebuilt** (`x86_64`, glibc, for PHP from the usual distro/ondrej/sury packages):
 
 ```bash
-tar -xzf php_pyp-0.1.0-8.4-nts-linux-x86_64.tar.gz
-sudo cp php_pyp-0.1.0-8.4-nts-linux-x86_64/pyp.so "$(php-config --extension-dir)/"
+tar -xzf php_pyp-0.2.0-8.4-nts-linux-x86_64.tar.gz
+sudo cp php_pyp-0.2.0-8.4-nts-linux-x86_64/pyp.so "$(php-config --extension-dir)/"
 echo "extension=pyp" | sudo tee /etc/php/8.4/mods-available/pyp.ini
 sudo phpenmod pyp && sudo systemctl reload php8.4-fpm   # Debian/Ubuntu
 ```
