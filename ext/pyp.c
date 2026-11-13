@@ -1,5 +1,5 @@
 /*
- * ProtectYourePHP native extension ("pyp") - version 0.2.0
+ * ProtectYourePHP native extension ("pyp") - version 0.3.0
  *
  *   - compile hook    runs files built with "pyp encode --require-ext": the decrypted source
  *                     goes straight to the compiler and never reaches PHP code
@@ -17,6 +17,7 @@
 #include "php.h"
 #include "ext/standard/info.h"
 #include "ext/json/php_json.h"
+#include "ext/standard/base64.h"
 #include "zend_exceptions.h"
 #include "zend_stream.h"
 #include "zend_virtual_cwd.h"
@@ -247,11 +248,73 @@ static int pyp_read_full(php_stream *stream, char *buf, size_t len)
 	return 1;
 }
 
-/* MAGIC | u32 headerLen | header(JSON) | ciphertext | u32 lengthOfEverythingBefore   (at the end of the file) */
+static int pyp_is_base64_char(unsigned char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=';
+}
+
+/*
+ * Text form (0.3): the container, base64 encoded in lines, follows the last "__halt_compiler();"
+ * of the file. size is the length of the whole file.
+ */
+static int pyp_read_armored(php_stream *stream, zend_off_t size, zend_string **header, zend_string **cipher)
+{
+	static const char marker[] = "__halt_compiler();";
+	const size_t mlen = sizeof(marker) - 1;
+	char *text;
+	const unsigned char *raw;
+	zend_string *decoded;
+	size_t n = (size_t) size, i, start = 0, rlen;
+	uint32_t len, hl;
+	int ok = 0;
+
+	/* base64 is 4/3 of the container, the rest is the stub and the line breaks */
+	if (size < (zend_off_t) mlen + 16 || size > (zend_off_t) PYP_MAX_CONTAINER * 2 || php_stream_seek(stream, 0, SEEK_SET) != 0) {
+		return 0;
+	}
+	text = (char *) emalloc(n);
+	if (!pyp_read_full(stream, text, n)) {
+		efree(text);
+		return 0;
+	}
+	for (i = n - mlen + 1; i-- > 0; ) {
+		if (text[i] == '_' && memcmp(text + i, marker, mlen) == 0) {
+			start = i + mlen;
+			break;
+		}
+	}
+	if (start == 0) {
+		efree(text);
+		return 0;
+	}
+	decoded = php_base64_decode_ex((const unsigned char *) text + start, n - start, 1);   /* strict: skips white space only */
+	efree(text);
+	if (!decoded) {
+		return 0;
+	}
+	raw = (const unsigned char *) ZSTR_VAL(decoded);
+	rlen = ZSTR_LEN(decoded);
+	if (rlen >= 14 && rlen - 4 <= PYP_MAX_CONTAINER && memcmp(raw, "PYP1", 4) == 0) {
+		len = pyp_be32(raw + rlen - 4);
+		hl = pyp_be32(raw + 4);
+		if ((size_t) len == rlen - 4 && hl >= 2 && hl <= PYP_MAX_HEADER && hl + 8 <= len) {
+			*header = zend_string_init((const char *) raw + 8, hl, 0);
+			*cipher = zend_string_init((const char *) raw + 8 + hl, len - 8 - hl, 0);
+			ok = 1;
+		}
+	}
+	zend_string_release(decoded);
+	return ok;
+}
+
+/*
+ * MAGIC | u32 headerLen | header(JSON) | ciphertext | u32 lengthOfEverythingBefore
+ * at the end of the file, as binary data or (text form) base64 encoded.
+ */
 static int pyp_read_container(const char *path, zend_string **header, zend_string **cipher)
 {
 	php_stream *stream = php_stream_open_wrapper((char *) path, "rb", IGNORE_URL, NULL);
-	unsigned char b[8];
+	unsigned char b[8], tail[4];
 	zend_off_t size;
 	uint32_t len, hl;
 	int ok = 0;
@@ -261,17 +324,18 @@ static int pyp_read_container(const char *path, zend_string **header, zend_strin
 	if (!stream) {
 		return 0;
 	}
+	/* size: length of the file without its last four bytes */
 	if (php_stream_seek(stream, -4, SEEK_END) != 0 || (size = php_stream_tell(stream)) < 8
-		|| !pyp_read_full(stream, (char *) b, 4)) {
+		|| !pyp_read_full(stream, (char *) tail, 4)) {
 		goto done;
 	}
-	len = pyp_be32(b);
+	len = pyp_be32(tail);
 	if (len < 10 || len > PYP_MAX_CONTAINER || (zend_off_t) len > size) {
-		goto done;
+		goto text;
 	}
 	if (php_stream_seek(stream, size - (zend_off_t) len, SEEK_SET) != 0 || !pyp_read_full(stream, (char *) b, 8)
 		|| memcmp(b, "PYP1", 4) != 0) {
-		goto done;
+		goto text;
 	}
 	hl = pyp_be32(b + 4);
 	if (hl < 2 || hl > PYP_MAX_HEADER || hl + 8 > len) {
@@ -290,6 +354,12 @@ static int pyp_read_container(const char *path, zend_string **header, zend_strin
 	ZSTR_VAL(*header)[hl] = 0;
 	ZSTR_VAL(*cipher)[ZSTR_LEN(*cipher)] = 0;
 	ok = 1;
+	goto done;
+text:
+	/* an ordinary PHP file practically never ends with four base64 characters: cheap test first */
+	if (pyp_is_base64_char(tail[0]) && pyp_is_base64_char(tail[1]) && pyp_is_base64_char(tail[2]) && pyp_is_base64_char(tail[3])) {
+		ok = pyp_read_armored(stream, size + 4, header, cipher);
+	}
 done:
 	php_stream_close(stream);
 	return ok;

@@ -38,7 +38,7 @@ final class LicenseException extends \RuntimeException
 
 final class Loader
 {
-    const VERSION = '1.4.0';
+    const VERSION = '1.5.0';
     const MAGIC = 'PYP1';
     const MAX_TTL = 604800;
     const MAX_RESPONSE = 65536;
@@ -146,29 +146,16 @@ final class Loader
     /** @internal used by the stream wrapper: 'php', 'data' or null for plain files */
     public static function peekKind(string $file): ?string
     {
-        $fh = @fopen($file, 'rb');
-        if (!$fh) {
+        $blob = self::containerBlob($file);
+        if ($blob === null) {
             return null;
         }
-        $kind = null;
-        $stat = fstat($fh);
-        $size = $stat ? (int)$stat['size'] : 0;
-        if ($size >= 12 && fseek($fh, -4, SEEK_END) === 0) {
-            $t = fread($fh, 4);
-            $len = strlen((string)$t) === 4 ? unpack('N', $t)[1] : 0;
-            if ($len >= 8 && $len <= $size - 4 && fseek($fh, $size - 4 - $len) === 0) {
-                $head = (string)fread($fh, 8);
-                if (strlen($head) === 8 && substr($head, 0, 4) === self::MAGIC) {
-                    $hl = unpack('N', substr($head, 4))[1];
-                    if ($hl > 0 && $hl <= self::MAX_HEADER && $hl < $len) {
-                        $h = json_decode((string)fread($fh, $hl), true);
-                        $kind = is_array($h) && in_array($h['kind'] ?? null, ['php', 'data'], true) ? $h['kind'] : 'corrupt';
-                    }
-                }
-            }
+        $hl = unpack('N', substr($blob, 4, 4))[1];
+        if ($hl <= 0 || $hl > self::MAX_HEADER || $hl + 8 > strlen($blob)) {
+            return null;
         }
-        fclose($fh);
-        return $kind;
+        $h = json_decode(substr($blob, 8, $hl), true);
+        return is_array($h) && in_array($h['kind'] ?? null, ['php', 'data'], true) ? $h['kind'] : 'corrupt';
     }
 
     /** @internal used by the stream wrapper */
@@ -188,31 +175,70 @@ final class Loader
         return $body . pack('N', strlen($body));
     }
 
-    /** @return array{0:array,1:string,2:string} header, cipher, raw header (AAD) */
-    private static function parseContainer(string $file): array
+    /**
+     * Text form of a container (the default for PHP files): base64 in lines of 76 characters.
+     * It follows the "__halt_compiler();" of the stub, so a protected file is plain text.
+     */
+    public static function armor(string $container): string
+    {
+        return "\n" . rtrim(chunk_split(base64_encode($container), 76, "\n"), "\n");
+    }
+
+    /**
+     * The container at the end of a file (MAGIC ... ciphertext, without the trailing length),
+     * or null when the file does not end with one. Understands the binary and the text form.
+     */
+    private static function containerBlob(string $file): ?string
     {
         $fh = @fopen($file, 'rb');
         if (!$fh) {
-            throw self::exception('corrupt', null);
+            return null;
         }
         try {
             $stat = fstat($fh);
             $size = $stat ? (int)$stat['size'] : 0;
             if ($size < 12 || fseek($fh, -4, SEEK_END) !== 0) {
-                throw self::exception('corrupt', null);
+                return null;
             }
             $t = (string)fread($fh, 4);
-            $len = strlen($t) === 4 ? unpack('N', $t)[1] : 0;
-            if ($len < 8 || $len > $size - 4 || fseek($fh, $size - 4 - $len) !== 0) {
-                throw self::exception('corrupt', null);
+            if (strlen($t) !== 4) {
+                return null;
             }
-            $blob = (string)fread($fh, $len);
+            $len = unpack('N', $t)[1];
+            if ($len >= 8 && $len <= $size - 4 && fseek($fh, $size - 4 - $len) === 0) {
+                $blob = (string)stream_get_contents($fh, $len);
+                if (strlen($blob) === $len && substr($blob, 0, 4) === self::MAGIC) {
+                    return $blob;
+                }
+            }
+            // text form: the file ends with base64, the container starts after the last __halt_compiler();
+            if (!preg_match('~^[A-Za-z0-9+/=]{4}$~', $t) || fseek($fh, 0) !== 0) {
+                return null;
+            }
+            $data = (string)stream_get_contents($fh);
         } finally {
             fclose($fh);
         }
-        if (strlen($blob) !== $len || substr($blob, 0, 4) !== self::MAGIC) {
+        $at = strrpos($data, '__halt_compiler();');
+        if ($at === false) {
+            return null;
+        }
+        $raw = base64_decode((string)preg_replace('/\s+/', '', substr($data, $at + 18)), true);
+        if ($raw === false || strlen($raw) < 12 || substr($raw, 0, 4) !== self::MAGIC
+            || unpack('N', substr($raw, -4))[1] !== strlen($raw) - 4) {
+            return null;
+        }
+        return substr($raw, 0, -4);
+    }
+
+    /** @return array{0:array,1:string,2:string} header, cipher, raw header (AAD) */
+    private static function parseContainer(string $file): array
+    {
+        $blob = self::containerBlob($file);
+        if ($blob === null) {
             throw self::exception('corrupt', null);
         }
+        $len = strlen($blob);
         $hl = unpack('N', substr($blob, 4, 4))[1];
         if ($hl < 2 || $hl > self::MAX_HEADER || 8 + $hl > $len) {
             throw self::exception('corrupt', null);

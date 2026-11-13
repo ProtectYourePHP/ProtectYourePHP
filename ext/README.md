@@ -8,7 +8,7 @@ native helpers automatically - no code changes needed.
 > This repository is split from [`ProtectYourePHP/ProtectYourePHP`](https://github.com/ProtectYourePHP/ProtectYourePHP)
 > (`ext/`). Please open pull requests there.
 
-## What it does (0.2)
+## What it does (0.3)
 
 | | |
 |---|---|
@@ -21,7 +21,11 @@ The loader uses `pyp_macs()` for **MAC address binding** of licenses. Without th
 falls back to `net_get_interfaces()`, `/sys/class/net` or `exec('ip link')` - which fails on many
 shared hosts.
 
-**Compile hook (new in 0.2).** Licensing still happens in `pyp-loader.php`, which hands the
+**Text form (new in 0.3).** Since encoder 1.5 protected PHP files are plain text (a base64 block
+after `__halt_compiler();`). Extension 0.3 reads both this form and the binary form of older
+builds and of `pyp encode --binary`; extension 0.2 only reads the binary form.
+
+**Compile hook (since 0.2).** Licensing still happens in `pyp-loader.php`, which hands the
 file key to the extension. Protected files are compiled on every request (they are not stored
 in OPcache yet). Encrypted data files are read with `\Pyp\Loader::read($file)`.
 
@@ -43,13 +47,13 @@ php -i | grep extension_dir              # where extensions go
 ### 2a. Windows
 
 1. Download the zip matching your PHP from the [latest release](https://github.com/ProtectYourePHP/pyp-ext/releases/latest),
-   e.g. `php_pyp-0.2.0-8.4-nts-vs17-x86_64.zip`.
+   e.g. `php_pyp-0.3.0-8.4-nts-vs17-x86_64.zip`.
 2. Copy the DLL from the zip into your `extension_dir` (usually `C:\php\ext`) and **rename it to
-   `php_pyp.dll`** (in the zip it is called `php_pyp-0.2.0-8.4-nts-vs17-x86_64.dll`; PIE renames it automatically).
+   `php_pyp.dll`** (in the zip it is called `php_pyp-0.3.0-8.4-nts-vs17-x86_64.dll`; PIE renames it automatically).
 
    ```powershell
-   Expand-Archive php_pyp-0.2.0-8.4-nts-vs17-x86_64.zip -DestinationPath pyp
-   Copy-Item pyp\php_pyp-0.2.0-8.4-nts-vs17-x86_64.dll C:\php\ext\php_pyp.dll
+   Expand-Archive php_pyp-0.3.0-8.4-nts-vs17-x86_64.zip -DestinationPath pyp
+   Copy-Item pyp\php_pyp-0.3.0-8.4-nts-vs17-x86_64.dll C:\php\ext\php_pyp.dll
    ```
 
 3. Add to `php.ini`:
@@ -71,8 +75,8 @@ pie install protectyourephp/pyp-ext
 **Prebuilt** (`x86_64`, glibc, for PHP from the usual distro/ondrej/sury packages):
 
 ```bash
-tar -xzf php_pyp-0.2.0-8.4-nts-linux-x86_64.tar.gz
-sudo cp php_pyp-0.2.0-8.4-nts-linux-x86_64/pyp.so "$(php-config --extension-dir)/"
+tar -xzf php_pyp-0.3.0-8.4-nts-linux-x86_64.tar.gz
+sudo cp php_pyp-0.3.0-8.4-nts-linux-x86_64/pyp.so "$(php-config --extension-dir)/"
 echo "extension=pyp" | sudo tee /etc/php/8.4/mods-available/pyp.ini
 sudo phpenmod pyp && sudo systemctl reload php8.4-fpm   # Debian/Ubuntu
 ```

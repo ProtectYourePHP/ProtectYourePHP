@@ -377,6 +377,26 @@ file_put_contents($f, substr_replace($bytes, chr(ord($bytes[strlen($bytes) - 40]
 check('tampered file rejected', $c !== 0 && strpos($e, 'corrupt') !== false, "$o $e");
 file_put_contents($f, $bytes);
 
+echo "file format\n";
+$lines = explode("\n", $bytes);
+$haltAt = array_search('__halt_compiler();', $lines, true);
+check('protected PHP files are plain text: comment, stub, base64 lines', strncmp($bytes, '<?php // Protected with ProtectYourePHP ', 40) === 0
+    && $haltAt !== false && !preg_match('/[^\x20-\x7E\n]/', $bytes)
+    && !array_filter(array_slice($lines, $haltAt + 1), static fn($l) => !preg_match('~^[A-Za-z0-9+/]{1,76}={0,2}$~', $l)), substr($bytes, 0, 600));
+check('header fields are not readable in the text form', strpos($bytes, '"project"') === false && strpos($bytes, 'PYP1') === false);
+$banner = "$tmp/banner.txt";
+file_put_contents($banner, "Demo Shop - Copyright (c) Example Ltd.\r\n\r\nDo not ?> edit.\n");
+foreach (['text' => [], 'binary' => ['--binary']] as $name => $extra) {
+    $o2 = "$tmp/out-format-$name";
+    [$o, $e, $c] = pyp(array_merge(['encode', "--src=$src", "--out=$o2", "--server=$url", '--data-ext=xml', "--banner-file=$banner"], $extra));
+    $head = (string)file_get_contents("$o2/lib/Calc.php", false, null, 0, 400);
+    check("$name form with banner: encode", $c === 0
+        && strpos($head, "\n//  Demo Shop - Copyright (c) Example Ltd.\n//\n//  Do not ? > edit.\n") !== false, "$o\n$e\n$head");
+    [$o, $e, $c] = php(["$o2/main.php"], ['PYP_LICENSE' => $good, 'PYP_DOMAIN' => 'shop.example.com', 'PYP_IP' => '10.1.2.3', 'PYP_CACHE_DIR' => $cliCache]);
+    check("$name form with banner: runs, output identical", $c === 0 && $o === $expected && $e === '', "exit=$c\n$o\n$e");
+}
+check('binary form keeps the container as binary data', strpos((string)file_get_contents("$tmp/out-format-binary/lib/Calc.php"), "__halt_compiler();PYP1") !== false);
+
 echo "source extraction attempts\n";
 file_put_contents("$out/attacker.php", <<<'PHP'
 <?php
@@ -521,6 +541,14 @@ if ($hook === 'yes') {
     [$o, $e, $c] = php(["$outExt/main.php"], $extEnv);
     check('compile hook: tampered file rejected', $c !== 0 && strpos($e, 'corrupt') !== false, "exit=$c\n$o\n$e");
     file_put_contents($f, $bytes);
+    // a damaged text form is no longer recognised as a container: the stub reports it
+    file_put_contents($f, substr($bytes, 0, -40) . '!' . substr($bytes, -39));
+    [$o, $e, $c] = php(["$outExt/main.php"], $extEnv);
+    check('compile hook: damaged text form reported as corrupted', $c !== 0 && strpos($e, 'is corrupted') !== false && strpos($o . $e, 'secretTotal') === false, "exit=$c\n$o\n$e");
+    file_put_contents($f, $bytes);
+    [$o, $e, $c] = pyp(['encode', "--src=$src", "--out=$tmp/out-ext-binary", "--server=$url", '--require-ext', '--binary']);
+    [$o, $e, $c] = php(["$tmp/out-ext-binary/main.php"], $extEnv);
+    check('compile hook runs the binary form (--binary)', $c === 0 && $o === $expected && $e === '', "exit=$c\n$o\n--stderr--\n$e");
     [$o, $e, $c] = php(["$out/main.php"], $extEnv);
     check('files built without --require-ext still run with the hook installed', $c === 0 && $o === $expected && $e === '', "exit=$c\n$o\n$e");
 } else {

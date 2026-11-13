@@ -10,7 +10,7 @@ ProtectYourePHP ships in two parts:
 The loader works without the extension. When the extension is installed it is
 detected automatically (`function_exists('pyp_macs')`).
 
-## What the extension does today (0.2.0)
+## What the extension does today (0.3.0)
 
 * **Compile hook** for files built with `pyp encode --require-ext`: the extension recognises
   the PYP container when PHP compiles the file, obtains the file key from `pyp-loader.php`
@@ -18,6 +18,8 @@ detected automatically (`function_exists('pyp_macs')`).
   under the file's real path. The decrypted source never becomes a PHP value, there is no
   `Loader::open()` to patch, and `__FILE__` / `__DIR__` are the real paths. Without the
   extension such files refuse to run, and the PHP loader refuses to decrypt them.
+  0.3 reads the text form of the container (base64 after `__halt_compiler();`, the default
+  since encoder 1.5) as well as the binary form (`pyp encode --binary`, older builds).
   Current limits: the file key still passes through PHP code, decryption calls ext-sodium,
   and protected files are compiled on every request (not stored in OPcache) so the license
   is checked each time. Data files (`--data-ext`) are still decrypted by the PHP loader: read them with
@@ -73,7 +75,7 @@ The split repository is [`ProtectYourePHP/pyp-ext`](https://github.com/ProtectYo
 git subtree split --prefix=ext -b ext-release
 git push https://github.com/ProtectYourePHP/pyp-ext.git ext-release:main
 # release
-gh release create 0.2.0 --repo ProtectYourePHP/pyp-ext --target main --title "pyp 0.2.0" --notes "..."
+gh release create 0.3.0 --repo ProtectYourePHP/pyp-ext --target main --title "pyp 0.3.0" --notes "..."
 ```
 
 Then submit `https://github.com/ProtectYourePHP/pyp-ext` on Packagist (package name

@@ -10,7 +10,7 @@
 extern zend_module_entry pyp_module_entry;
 #define phpext_pyp_ptr &pyp_module_entry
 
-#define PHP_PYP_VERSION "0.2.0"
+#define PHP_PYP_VERSION "0.3.0"
 
 /* Version of the contract between this extension and pyp-loader.php.
  * Bump when functions are added/changed so the loader can feature-detect. */
